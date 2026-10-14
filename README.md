@@ -9,16 +9,29 @@ Windows、零第三方依赖（Python 标准库 + PowerShell）。
 - **恢复**（新机）：从 GitHub clone → 文件层恢复 → 会话层恢复（走 Hermes 官方导入管线）→ 平台路由回写 → 桌面端收尾器 → 重启即回到重装前。
 - **私有保障**：推送前自动检查仓库可见性；非私有自动改回；改不回则拒绝推送。
 
+## 安装
+
+方式一（推荐，完整且最稳）：
+
+```
+git clone https://github.com/yechang1450/hermes-cloud-backup.git "%LOCALAPPDATA%\hermes\skills\hermes-cloud-backup"
+```
+
+方式二（Hermes 官方命令直装；会自动带上脚本与模板，网络不稳时重试）：
+
+```
+hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-cloud-backup/main/SKILL.md
+```
+
 ## 快速开始（源机）
 
-1. 安装本技能：把本仓目录放入 `%LOCALAPPDATA%\hermes\skills\hermes-cloud-backup\`。
-2. 首次初始化（自动创建私有仓并首推）：
+1. 首次初始化（自动创建私有仓并首推）：
 
    ```
    python %LOCALAPPDATA%\hermes\skills\hermes-cloud-backup\scripts\sync.py --owner <你的GitHub用户名> --create-remote
    ```
 
-3. 日常同步：
+2. 日常同步：
 
    ```
    python %LOCALAPPDATA%\hermes\skills\hermes-cloud-backup\scripts\sync.py

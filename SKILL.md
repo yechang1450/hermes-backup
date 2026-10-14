@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.2.0
+version: 0.2.1
 author: yechang1450, Hermes Agent
 license: MIT
 platforms: [windows]
@@ -45,6 +45,17 @@ metadata:
 | 桌面端收尾器 | `pwsh -NoProfile -File <REPO>/tools/finish_restore.ps1 -Repo <REPO>` |
 
 > 机器本地配置（镜像目录等）放技能目录 `local.json`（不进任何仓库）；镜像目录默认自动探测，`--mirror` 可指定。
+
+## 文件构成
+
+- `scripts/sync.py` — 日常同步（采集 → commit → push；本机镜像工作区）
+- `scripts/restore_files.py` — 文件层恢复（home/profiles 覆盖，旧件自动备份）
+- `scripts/restore_sessions.py` — 会话层恢复（走官方 SessionDB 导入管线）
+- `scripts/run_in_runtime.py` — 在 Hermes 官方运行时里执行脚本（会话导入需要）
+- `scripts/apply_routing.py` — 平台路由回写（微信/QQ 旧线程续接）
+- `scripts/concat_sessions.py` — 会话拼包（桌面端「导入」按钮用）
+- `scripts/finish_restore.ps1` — 桌面端收尾器（等待退出 → 替换数据 → 重启网关/桌面端）
+- `templates/RESTORE.md` — 新机恢复手册（编号步骤 + 验收清单）
 
 ## 流程 A：日常同步（源机）
 

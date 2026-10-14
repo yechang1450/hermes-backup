@@ -1,23 +1,24 @@
 # -*- coding: utf-8 -*-
-"""在 Hermes 运行时里执行指定脚本（含全部依赖与 HERMES_HOME 语义）。
+"""在 Hermes 官方运行时里执行指定脚本（与 `hermes` 启动器完全同源）。
 
-与官方启动器同构（hermes_cli/_launchers.py::runtime_command 的配方）：
-  <store python> -I -c "pop 环境; sys.path+=hermes-agent; import hermes_bootstrap;
-                        默认 HERMES_HOME; runpy.run_path(目标脚本)"
-- store python 从 <HERMES_HOME>/tools/python-*/python.exe 取（与 hermes 启动器同源）。
-- 环境变量 HERMES_HOME 若已设置则原样保留（可指向沙箱做隔离测试）。
+命令由官方函数 `hermes_cli/_launchers.py::runtime_command()` 构建：
+  <store python> -I -c "<官方 bootstrap>" <脚本> <脚本参数...>
+- store python 由官方 `resolve_store_python()` 解析（<HERMES_HOME>/tools/python-*/）。
+- 环境整理（清 PYTHONHOME/PYTHONPATH/VIRTUAL_ENV、注入 hermes-agent 路径、
+  钉定 HERMES_HOME）全部由官方 bootstrap 完成——本脚本不再自实现。
+- HERMES_HOME 若已设置则原样保留（可指向沙箱做隔离测试）。
 
 用法:
     python run_in_runtime.py <目标脚本.py> [脚本参数...]
 """
 from __future__ import annotations
 
-import glob
 import os
-import re
 import subprocess
 import sys
 from pathlib import Path
+
+_RUN_CODE = "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')"
 
 
 def hermes_home() -> Path:
@@ -36,31 +37,13 @@ def main() -> int:
     if not (root / "hermes_state.py").is_file():
         print(f"找不到 hermes-agent 源码目录: {root}")
         return 2
-    pythons = glob.glob(str(home / "tools" / "python-*" / "python.exe"))
-    if not pythons:
-        print(f"找不到 store python（{home}/tools/python-*/python.exe）")
-        return 2
-
-    def _ver(p: str) -> tuple:
-        m = re.search(r"python-(\d+)\.(\d+)\.(\d+)", p)
-        return tuple(int(x) for x in m.groups()) if m else (0, 0, 0)
-
-    py = sorted(pythons, key=_ver)[-1]  # 按版本号取最新（字典序会误判 3.9 > 3.14）
+    sys.path.insert(0, str(root))
+    from hermes_cli._launchers import runtime_command  # noqa: E402
 
     script = str(Path(sys.argv[1]).resolve())
     rest = sys.argv[2:]
-    bootstrap = (
-        "import os, sys, runpy; "
-        "os.environ.pop('PYTHONHOME', None); os.environ.pop('PYTHONPATH', None); "
-        "os.environ.pop('VIRTUAL_ENV', None); "
-        f"sys.path.insert(0, {str(root)!r}); "
-        "import hermes_bootstrap; "
-        "os.environ.get('HERMES_HOME') or os.environ.__setitem__('HERMES_HOME', "
-        "str(__import__('hermes_constants').get_default_hermes_root())); "
-        "sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name='__main__')"
-    )
-    cmd = [py, "-I", "-u", "-c", bootstrap, script, *rest]
-    print(f"[run_in_runtime] python={py}")
+    cmd = runtime_command(root, args=[script, *rest], code=_RUN_CODE, home=home)
+    print(f"[run_in_runtime] python={cmd[0]}")
     print(f"[run_in_runtime] script={script} args={rest}")
     return subprocess.call(cmd, cwd=os.getcwd())
 

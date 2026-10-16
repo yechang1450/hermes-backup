@@ -66,9 +66,9 @@ pwsh -NoProfile -Command "(Invoke-CimMethod -ClassName Win32_Process -MethodName
 
 1. 置顶对话回来了（会话页置顶区）。
 2. 微信/QQ 通道连上（`hermes gateway status`），发消息确认**续接旧线程**。
-3. 群聊（WorkBuddy / 三省六部）记录与成员元数据在。
+3. 群聊记录与成员元数据在。
 4. 各 bot 档：`hermes -p <档名> sessions stats` 数量与备份一致。
-5. provider 实测出词（自定义端点 opencode-go 正常）。
+5. 主 provider 实测出词（按恢复后的配置能正常调用）。
 6. 桌面端设置与你记忆一致（主题/布局/偏好）。
 
 ## 7. 收尾

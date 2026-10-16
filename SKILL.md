@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.2.3
+version: 0.2.4
 author: yechang1450, Hermes Agent
 license: MIT
 platforms: [windows]
@@ -77,7 +77,7 @@ metadata:
 
 ## Pitfalls
 
-- **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（本机已设）。
+- **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（新机上首次同步前设置一次即可）。
 - **GitHub 单文件 100MiB 硬限**：会话导出件按「每会话一个 gz」拆分存放（最大单件 ~61MB）；切勿改回整包。
 - **官方导入尺寸上限**（≤5MB/≤1万条/单次 ≤25MB 等）：面向 Web 场景；恢复工具在**本进程内**放宽这些常量（不改官方文件）。若官方改版导致常量改名，工具会记录并继续（检查 `hasattr`）。
 - **导出不脱敏**：会话文件含对话原文与凭据讨论 → 仓必须永远私有。

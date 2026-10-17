@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3  (2026-10-17)
+"""hermes-cloud-backup · sync v3.1  (2026-10-17)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -26,6 +26,7 @@
   · 永不 force-push；push 被拒时 pull --no-rebase 后重试一次；出现合并冲突则中止并记录
   · 单实例防撞锁：并发触发时后来者自动让路（锁=HERMES_HOME/state/hermes-backup-sync.lock；
     崩溃遗留的锁 3h 后自动接管）
+  · git 索引锁自愈：崩溃遗留的 .git/index.lock（>120s）自动清除并重试一次
 """
 from __future__ import annotations
 
@@ -526,6 +527,27 @@ def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
     return p
 
 
+def purge_index_lock(min_age: int) -> bool:
+    """git 索引锁自愈：镜像仓只由本工具写入，残留的 .git/index.lock 视为崩溃遗留。
+    min_age 秒数内的锁不动（避免误删正在进行的操作）；返回是否清除了锁。"""
+    lock = MIRROR / ".git" / "index.lock"
+    if not lock.exists():
+        return False
+    try:
+        age = time.time() - lock.stat().st_mtime
+    except OSError:
+        age = 0
+    if age < min_age:
+        return False
+    try:
+        lock.unlink()
+        log(f"清除陈旧 git index.lock（年龄 {int(age)}s）")
+        return True
+    except OSError as e:
+        log(f"!! index.lock 清除失败：{e}")
+        return False
+
+
 def ensure_repo() -> None:
     if not (MIRROR / ".git").exists():
         log("git init")
@@ -551,7 +573,15 @@ def commit_and_push(message: str, no_push: bool) -> dict:
     # 冲突残留防御：merge 状态未清理则中止
     if (MIRROR / ".git" / "MERGE_HEAD").exists():
         raise RuntimeError("仓库处于未完成的 merge 状态，请人工处理后重跑")
-    git("add", "-A")
+    purge_index_lock(120)
+    try:
+        git("add", "-A")
+    except RuntimeError as e:
+        if "index.lock" not in str(e):
+            raise
+        log("git add 撞上 index.lock —— 清锁后重试一次")
+        purge_index_lock(0)
+        git("add", "-A")
     status = git("status", "--porcelain").stdout.strip()
     if status:
         git("commit", "-m", message)

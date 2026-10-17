@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v2  (2026-10-14)
+"""hermes-cloud-backup · sync v3  (2026-10-17)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -15,15 +15,23 @@
 的 "mirror" 字段 > D:\\hermes-backup（若存在）> ~/hermes-backup。
 仓库解析顺序：镜像的 git remote > --remote > gh 登录账号（默认仓名 hermes-backup）。
 
+存储格式（v3，2026-10-17）：
+  · 会话原样存文本：<会话id>.jsonl（>90MB 时切 <会话id>.part-0001.jsonl … 分片）；
+    不压缩——预压缩（整包 gzip）会让头部元数据的任何变动把整份文件压缩后的字节
+    全部改写，git 的增量(delta)机制失效、每轮把整包当新文件重存（实测 79MB/文件/轮）。
+    原样文本让 git delta 直接命中未变区段（实测降到 ~0.01–2MB/文件/轮）。
+
 安全闸（fail-closed）：
-  · 采集完成后若发现单文件 >95MB 或镜像总量 >1.5GB -> 中止，不 commit 不 push
+  · 采集完成后若发现单文件 >95MB 或镜像总量 >4GB -> 中止，不 commit 不 push
   · 永不 force-push；push 被拒时 pull --no-rebase 后重试一次；出现合并冲突则中止并记录
+  · 单实例防撞锁：并发触发时后来者自动让路（锁=HERMES_HOME/state/hermes-backup-sync.lock；
+    崩溃遗留的锁 3h 后自动接管）
 """
 from __future__ import annotations
 
 import argparse
+import atexit
 import fnmatch
-import gzip
 import json
 import os
 import re
@@ -126,7 +134,11 @@ def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: s
     GIT_EMAIL = f"{owner}@users.noreply.github.com" if owner else ""
 
 SIZE_GUARD_FILE = 95 * 1024 * 1024      # 单文件上限
-SIZE_GUARD_TOTAL = 1500 * 1024 * 1024   # 镜像总量上限
+SIZE_GUARD_TOTAL = 4096 * 1024 * 1024   # 镜像总量上限（v3 会话不压缩，基数更大）
+PART_MAX = 90 * 1024 * 1024             # 会话分片阈值（为 100MB 单文件硬限留余量）
+
+LOCK_FILE = HERMES_HOME / "state" / "hermes-backup-sync.lock"
+LOCK_STALE_SECONDS = 3 * 3600           # 兜底：崩溃遗留的锁 3 小时后自动接管
 
 EXCLUDE_PATTERNS = ("*.lock", "*.pid", "*-wal", "*-shm", "*~", "Thumbs.db", "desktop.ini", "*.pyc")
 EXCLUDE_DIRNAMES = {"__pycache__", "node_modules"}
@@ -139,7 +151,7 @@ HOME_FILES = [
 HOME_DIRS = [
     "memories", "cron", "skills", "kanban", "weixin", "pairing", "platforms",
     "hooks", "vault", "desktop", "bot_relay", "assets", "pending",
-    "pending_messages", "state", ".curator_backups",
+    "pending_messages", "state", "scripts", ".curator_backups",
 ]
 HOME_EXTRA_FILES = [  # skills 下跳过 .hub，但保留这两枚小锁文件
     "skills/.hub/lock.json",
@@ -172,6 +184,33 @@ def log(msg: str) -> None:
     line = f"[{datetime.now().strftime('%H:%M:%S')}] {msg}"
     print(line, flush=True)
     LOG.append(line)
+
+
+def acquire_lock() -> bool:
+    """单实例防撞锁：多触发源（手动＋自动）并发时后来者让路。"""
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if LOCK_FILE.exists():
+        try:
+            age = time.time() - LOCK_FILE.stat().st_mtime
+        except OSError:
+            age = 0
+        if age < LOCK_STALE_SECONDS:
+            log(f"已有另一轮同步在进行（锁年龄 {int(age)}s）——本轮退出，让路")
+            return False
+        log(f"发现陈旧锁（{int(age)}s > {LOCK_STALE_SECONDS}s），接管")
+    LOCK_FILE.write_text(
+        json.dumps({"pid": os.getpid(),
+                    "started": datetime.now().astimezone().isoformat()}),
+        encoding="utf-8")
+    atexit.register(release_lock)
+    return True
+
+
+def release_lock() -> None:
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def resolved(p: Path) -> str:
@@ -247,7 +286,8 @@ def collect_profiles(report: dict) -> None:
     reset_dir(dst_root)
     pdir = HERMES_HOME / "profiles"
     names = (sorted(d.name for d in pdir.iterdir()
-                    if d.is_dir() and not d.name.startswith("."))
+                    if d.is_dir() and not d.name.startswith(".")
+                    and (d / "profile.yaml").is_file())
              if pdir.is_dir() else [])
     report["profiles"] = {}
     for name in names:
@@ -353,10 +393,14 @@ def ensure_private(report: dict) -> bool:
 SESSION_ID_RE = re.compile(rb'"id"\s*:\s*"([0-9A-Za-z_.-]{4,128})"')
 
 
-def split_to_session_gz(raw: Path, outdir: Path) -> dict:
-    """把「一行=一个会话」的 jsonl 拆成每会话一个 .jsonl.gz（确定性压缩）。"""
+def split_to_session_parts(raw: Path, outdir: Path) -> dict:
+    """把「一行=一个会话」的 jsonl 原样拆成每会话 .jsonl（>90MB 切 .part-NNNN.jsonl 分片）。
+
+    刻意不压缩：整包 gzip 会让头部元数据的任何变动把整份文件的压缩字节全部改写，
+    git 的增量(delta)机制由此失效——每轮同步都把整包当新文件重存（实测 79MB/文件/轮）。
+    原样存文本后，git delta 直接命中未变区段（实测降到 ~0.01–2MB/文件/轮）。"""
     outdir.mkdir(parents=True, exist_ok=True)
-    stats = {"files": 0, "gz_total": 0, "gz_max": 0, "gz_max_file": "", "oversize": []}
+    stats = {"sessions": 0, "files": 0, "bytes_total": 0, "max": 0, "max_file": "", "oversize": []}
     seen: dict[str, int] = {}
     with open(raw, "rb") as fin:
         for idx, ln in enumerate(fin):
@@ -366,18 +410,21 @@ def split_to_session_gz(raw: Path, outdir: Path) -> dict:
             seen[sid] = dup + 1
             if dup:
                 sid = f"{sid}-{dup}"
-            gz = outdir / f"{sid}.jsonl.gz"
-            with open(gz, "wb") as fout:
-                with gzip.GzipFile(filename=f"{sid}.jsonl", mode="wb",
-                                   fileobj=fout, mtime=0, compresslevel=6) as gzf:
-                    gzf.write(ln)
-            size = gz.stat().st_size
-            stats["files"] += 1
-            stats["gz_total"] += size
-            if size > stats["gz_max"]:
-                stats["gz_max"], stats["gz_max_file"] = size, gz.name
-            if size > SIZE_GUARD_FILE:
-                stats["oversize"].append(gz.name)
+            stats["sessions"] += 1
+            if len(ln) <= PART_MAX:
+                outs = [(outdir / f"{sid}.jsonl", ln)]
+            else:
+                outs = [(outdir / f"{sid}.part-{k // PART_MAX + 1:04d}.jsonl", ln[k:k + PART_MAX])
+                        for k in range(0, len(ln), PART_MAX)]
+            for path, blob in outs:
+                path.write_bytes(blob)
+                size = len(blob)
+                stats["files"] += 1
+                stats["bytes_total"] += size
+                if size > stats["max"]:
+                    stats["max"], stats["max_file"] = size, path.name
+                if size > SIZE_GUARD_FILE:
+                    stats["oversize"].append(path.name)
     return stats
 
 
@@ -401,26 +448,30 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         out = (p.stdout or "") + "\n" + (p.stderr or "")
         skipped = sorted(set(re.findall(r"Session '([0-9A-Za-z_]+)' has more than", out)))
         entry: dict = {"ok": p.returncode == 0, "rc": p.returncode, "sessions": 0,
-                       "files": 0, "gz_total": 0, "gz_max": 0, "gz_max_file": "",
+                       "files": 0, "bytes_total": 0, "max": 0, "max_file": "",
                        "oversize": [], "skipped_gt_20k": skipped,
                        "seconds": round(time.time() - t0, 1)}
         if raw.exists():
-            stats = split_to_session_gz(raw, sessions_root / name)
+            stats = split_to_session_parts(raw, sessions_root / name)
             raw.unlink()
             entry.update(stats)
-            entry["sessions"] = stats["files"]
         if p.returncode != 0 or skipped:
             entry["tail"] = out.strip()[-600:]
         report["exports"][name] = entry
         log(f"export {name}: rc={p.returncode} sessions={entry['sessions']} "
-            f"gz={entry['gz_total']/1048576:.1f}MB max={entry['gz_max']/1048576:.1f}MB "
+            f"files={entry['files']} raw={entry['bytes_total']/1048576:.1f}MB "
+            f"max={entry['max']/1048576:.1f}MB "
             f"skipped={len(skipped)} {entry['seconds']}s")
 
     do_one("main", None)
     pdir = HERMES_HOME / "profiles"
     for d in sorted(pdir.iterdir()):
-        if d.is_dir() and not d.name.startswith("."):
-            do_one(d.name, d.name)
+        if not (d.is_dir() and not d.name.startswith(".")):
+            continue
+        if not (d / "profile.yaml").is_file():
+            log(f"export {d.name}: 跳过（目录存在但 profile 未注册）")
+            continue
+        do_one(d.name, d.name)
 
 
 def dump_routing(report: dict) -> None:
@@ -566,6 +617,9 @@ def main() -> int:
                     help="远端不存在时用 gh 创建私有仓")
     args = ap.parse_args()
 
+    if not acquire_lock():
+        return 0
+
     t0 = time.time()
     MIRROR = resolve_mirror(args.mirror)
     resolve_identity(MIRROR, args.owner, args.repo_name, args.remote)
@@ -588,7 +642,7 @@ def main() -> int:
     export_sessions(report, args.skip_exports)
     over = {n: e["oversize"] for n, e in report.get("exports", {}).items() if e.get("oversize")}
     if over:
-        log(f"!! 单会话文件超过 {SIZE_GUARD_FILE // 1048576}MB，中止（不 commit/push）：{over}")
+        log(f"!! 采集出现超限单文件（>{SIZE_GUARD_FILE // 1048576}MB），中止（不 commit/push）：{over}")
         report["aborted"] = "oversize_session"
         write_meta(report, t0)
         return 2

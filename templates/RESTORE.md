@@ -38,7 +38,7 @@ python D:\hermes-backup\tools\run_in_runtime.py D:\hermes-backup\tools\restore_s
 - 已存在的会话自动跳过（幂等）；逐个会话打印 `+ 已导入 / = 已存在`。
 - 超大档（数万条消息）会排在最后、耗时较长（可至数十分钟），属正常；可后台跑。
 - 若个别会话报 `database is locked`（桌面端在写库）：在桌面端退出后的空窗期重跑本步即可，已导入的自动跳过。
-- 完成标准：末尾 `failed=0`，且 `imported + skipped` 与本仓会话文件总数一致。
+- 完成标准：末尾 `failed=0`，且 `imported + skipped` 与本仓会话数一致（新格式＝每会话 `.jsonl`，>90MB 的巨会话为 `.part-NNNN.jsonl` 分片；旧备份为 `.jsonl.gz`，均自动识别）。
 
 ## 4. 恢复补缺件（微信/QQ 线程映射）
 

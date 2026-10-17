@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""把 sessions/<档>/*.jsonl.gz（每会话一个文件）按时间序拼成若干可导入整包。
+"""把 sessions/<档>/ 的每会话文件（.jsonl / .part-NNNN.jsonl / 旧 .jsonl.gz）拼成若干可导入整包。
 
 恢复流程（新机）示例：
     python tools/concat_sessions.py main
@@ -32,12 +32,29 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     batch_limit = args.batch_mb * 1024 * 1024
 
-    files = sorted(p for p in src.iterdir() if p.name.endswith(".jsonl.gz"))
+    groups: dict[str, list[Path]] = {}
+    for p in src.iterdir():
+        if not p.is_file():
+            continue
+        n = p.name
+        if n.endswith(".jsonl.gz"):
+            groups.setdefault(n[:-len(".jsonl.gz")], []).append(p)
+        elif ".part-" in n and n.endswith(".jsonl"):
+            groups.setdefault(n.split(".part-", 1)[0], []).append(p)
+        elif n.endswith(".jsonl"):
+            groups.setdefault(n[:-len(".jsonl")], []).append(p)
+    files = sorted(groups.items())
     part, written, total = 1, 0, 0
     fh = None
     try:
-        for p in files:
-            data = gzip.decompress(p.read_bytes())
+        for key, parts in files:
+            data = b""
+            for q in sorted(parts, key=lambda p: p.name):
+                if q.name.endswith(".gz"):
+                    with gzip.open(q, "rb") as gf:
+                        data = gf.read()
+                else:
+                    data += q.read_bytes()
             if fh and written + len(data) > batch_limit:
                 fh.close()
                 print(f"  -> {out / f'{args.profile}-part{part}.jsonl'} ({written/1048576:.1f}MB)")

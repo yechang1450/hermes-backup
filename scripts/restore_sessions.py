@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""恢复会话层：把 sessions/<档>/*.jsonl.gz 恢复进本机 state.db。
+"""恢复会话层：把 sessions/<档>/ 的每会话文件（.jsonl / .part-NNNN.jsonl / 旧 .jsonl.gz）恢复进本机 state.db。
 
 走官方 `SessionDB.import_sessions()` 管线（与桌面端"导入"按钮同一条代码路径）。
 官方对单次导入有尺寸上限（≤500 会话 / 单会话 ≤1 万条、≤5MB / 单次 ≤5 万条、≤25MB），
@@ -39,12 +39,32 @@ def find_agent_src(home: Path) -> Path:
     raise SystemExit(f"找不到 hermes-agent 源码目录（尝试过 {home}、{home.parent} 下）")
 
 
-def load_session(path: Path) -> dict:
-    if path.name.endswith(".gz"):
-        with gzip.open(path, "rb") as f:
-            data = f.read()
-    else:
-        data = path.read_bytes()
+def group_sessions(src: Path) -> dict[str, list[Path]]:
+    """按会话分组：<sid>.jsonl（原样单件）/ <sid>.part-NNNN.jsonl（分片）/ <sid>.jsonl.gz（旧整包）。"""
+    groups: dict[str, list[Path]] = {}
+    for p in src.iterdir():
+        if not p.is_file():
+            continue
+        n = p.name
+        if n.endswith(".jsonl.gz"):
+            groups.setdefault(n[:-len(".jsonl.gz")], []).append(p)
+        elif ".part-" in n and n.endswith(".jsonl"):
+            groups.setdefault(n.split(".part-", 1)[0], []).append(p)
+        elif n.endswith(".jsonl"):
+            groups.setdefault(n[:-len(".jsonl")], []).append(p)
+    return groups
+
+
+def load_session(files: list[Path]) -> dict:
+    """单件/分片/旧 gz 皆可：分片按文件名序拼接后整体解析（与原样存储逐字节一致）。"""
+    files = sorted(files, key=lambda p: p.name)
+    data = b""
+    for p in files:
+        if p.name.endswith(".gz"):
+            with gzip.open(p, "rb") as f:
+                data = f.read()          # 旧格式：单文件即整包
+        else:
+            data += p.read_bytes()
     return json.loads(data)
 
 
@@ -97,20 +117,20 @@ def main() -> int:
             continue
         db_path = home / ("state.db" if prof == "main" else f"profiles/{prof}/state.db")
         db_path.parent.mkdir(parents=True, exist_ok=True)
-        files = sorted((p for p in src.iterdir()
-                        if p.name.endswith((".jsonl.gz", ".jsonl"))),
-                       key=lambda p: p.stat().st_size)  # 小档优先：进度可见、大档最后
-        print(f"[{prof}] 目标库: {db_path} | 会话文件: {len(files)} 个")
+        groups = group_sessions(src)
+        files = sorted(groups.items(),
+                       key=lambda kv: sum(p.stat().st_size for p in kv[1]))  # 小档优先：进度可见、大档最后
+        print(f"[{prof}] 目标库: {db_path} | 会话: {len(files)} 个")
         db = SessionDB(db_path)
         try:
-            for p in files:
+            for key, parts in files:
                 try:
-                    sess = load_session(p)
+                    sess = load_session(parts)
                 except Exception as exc:
                     total["failed"] += 1
-                    print(f"   !! 读取失败 {p.name}: {exc}")
+                    print(f"   !! 读取失败 {key}: {exc}")
                     continue
-                sid = sess.get("id", p.name)
+                sid = sess.get("id", key)
                 try:
                     res = db.import_sessions([sess])
                 except Exception as exc:

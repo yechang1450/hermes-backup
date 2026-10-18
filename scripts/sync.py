@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3.1  (2026-10-17)
+"""hermes-cloud-backup · sync v3.2  (2026-10-18)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -24,8 +24,8 @@
 安全闸（fail-closed）：
   · 采集完成后若发现单文件 >95MB 或镜像总量 >4GB -> 中止，不 commit 不 push
   · 永不 force-push；push 被拒时 pull --no-rebase 后重试一次；出现合并冲突则中止并记录
-  · 单实例防撞锁：并发触发时后来者自动让路（锁=HERMES_HOME/state/hermes-backup-sync.lock；
-    崩溃遗留的锁 3h 后自动接管）
+  · 单实例防撞锁：并发触发时后来者自动让路（锁=HERMES_HOME/state/hermes-backup-sync.lock）——
+    锁内记录持有者 pid：持有进程已消失（触发端被掐/崩溃）立即接管，3h 陈旧窗仅为兜底
   · git 索引锁自愈：崩溃遗留的 .git/index.lock（>120s）自动清除并重试一次
 """
 from __future__ import annotations
@@ -139,7 +139,7 @@ SIZE_GUARD_TOTAL = 4096 * 1024 * 1024   # 镜像总量上限（v3 会话不压�
 PART_MAX = 90 * 1024 * 1024             # 会话分片阈值（为 100MB 单文件硬限留余量）
 
 LOCK_FILE = HERMES_HOME / "state" / "hermes-backup-sync.lock"
-LOCK_STALE_SECONDS = 3 * 3600           # 兜底：崩溃遗留的锁 3 小时后自动接管
+LOCK_STALE_SECONDS = 3 * 3600           # 兜底：无法核实持有者时的陈旧锁窗口（正常由 pid 存活判定立即接管）
 
 EXCLUDE_PATTERNS = ("*.lock", "*.pid", "*-wal", "*-shm", "*~", "Thumbs.db", "desktop.ini", "*.pyc")
 EXCLUDE_DIRNAMES = {"__pycache__", "node_modules"}
@@ -187,18 +187,51 @@ def log(msg: str) -> None:
     LOG.append(line)
 
 
+def _pid_alive(pid: int) -> bool:
+    """持锁进程是否仍在世（Windows 用 OpenProcess/STILL_ACTIVE，其余平台 os.kill(0)）。"""
+    if not pid:
+        return False
+    try:
+        if os.name == "nt":
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            h = k32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not h:
+                return False
+            try:
+                code = ctypes.c_ulong()
+                if k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return code.value == 259  # STILL_ACTIVE
+                return False
+            finally:
+                k32.CloseHandle(h)
+        os.kill(int(pid), 0)
+        return True
+    except Exception:
+        return False
+
+
 def acquire_lock() -> bool:
-    """单实例防撞锁：多触发源（手动＋自动）并发时后来者让路。"""
+    """单实例防撞锁：多触发源（手动＋自动）并发时后来者让路；
+    锁记录持有者 pid——持有进程已消失（如触发端被掐、进程崩溃）时立即接管。"""
     LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     if LOCK_FILE.exists():
         try:
             age = time.time() - LOCK_FILE.stat().st_mtime
         except OSError:
             age = 0
-        if age < LOCK_STALE_SECONDS:
+        holder = 0
+        try:
+            holder = int(json.loads(LOCK_FILE.read_text(encoding="utf-8")).get("pid") or 0)
+        except Exception:
+            holder = 0
+        if holder and not _pid_alive(holder):
+            log(f"锁持有者进程 {holder} 已不存在——立即接管（免等陈旧窗）")
+        elif age < LOCK_STALE_SECONDS:
             log(f"已有另一轮同步在进行（锁年龄 {int(age)}s）——本轮退出，让路")
             return False
-        log(f"发现陈旧锁（{int(age)}s > {LOCK_STALE_SECONDS}s），接管")
+        else:
+            log(f"发现陈旧锁（{int(age)}s > {LOCK_STALE_SECONDS}s），接管")
     LOCK_FILE.write_text(
         json.dumps({"pid": os.getpid(),
                     "started": datetime.now().astimezone().isoformat()}),

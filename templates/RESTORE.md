@@ -47,7 +47,7 @@ python D:\hermes-backup\tools\apply_routing.py
 ```
 - 把 `supplement\gateway_routing.json` 写回本机 `state.db` 的 `gateway_routing` 表（scope 自动改成本机路径）。
 - 若报 database is locked：等桌面端退出后的空窗期重跑（收尾器阶段）。
-- 完成标准：输出 `applied N routing rows`。
+- 完成标准：输出 `applied: new=N updated=N unchanged=N`。
 
 ## 5. 桌面端收尾（需要用户退出桌面端一次）
 

@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.3.3
+version: 0.3.4
 author: yechang1450, Hermes Agent
 license: MIT
 platforms: [windows]
@@ -75,7 +75,7 @@ metadata:
 把同步挂成 Hermes 官方 cron 的 watchdog 型任务（`--no-agent`：不过模型、不花 token，只投递脚本输出）：
 
 1. 启动器：本技能随附 `scripts/hb-sentinel.py`（哨兵）与 `scripts/hb-autosync.py`（周期）两枚参考实现——复制到 `HERMES_HOME\scripts\`（cron 脚本**只允许**放在该目录内；`.py` 由官方托管 Python 执行）。脚本自带 git PATH 摆正、防撞锁与 20 分钟新鲜度闸；**成功＝空输出（静默）**，失败输出错误摘要（被自动投递）。
-2. 建任务并实测：`hermes cron create "every 6h" --name "hermes-cloud-backup 自动同步" --script hb-autosync.py --no-agent --deliver local`；建好后用 `hermes cron run <任务id>` 当场触发一轮，核对镜像/远端真实前进再收工。
+2. 建两个任务（哨兵 2 分钟＋周期 2 小时；完整命令见 `references/auto-sync.md`「安装」节）：`hermes cron create "2m" --name "hermes-backup 哨兵" --script hb-sentinel.py --no-agent --deliver local` 与 `hermes cron create "every 2h" --name "hermes-backup 周期同步" --script hb-autosync.py --no-agent --deliver local`。建好后用 `hermes cron run <任务id>` 当场触发核对——注意 **`cron run` 会跟随脚本跑完（同步一轮约 4–6 分钟）**：请放宽超时或用 background，勿中途掐掉（掐掉会留孤儿锁＋未推提交；v3.2 起由下一轮自动接管并补推，零丢失）。
 3. 官方语义：**错过自动补跑**（`cron.catch_up_missed` 默认开；多次错过合并补跑一次）⇒ 等效「每次开机/网关重启后补一轮 ＋ 运行中周期刷新」；调度器随网关运行（`hermes cron status` 看宿主与心跳）；脚本单轮超时可调（`HERMES_CRON_SCRIPT_TIMEOUT` 或 `cron.script_timeout_seconds`），按同步 4–6 分钟一轮留足余量。
 4. **并发前提**：多触发源（手动＋自动）并存前，先给 `sync.py` 补**单实例锁**——两轮同步相撞会互踩镜像仓。（**已落地**：v0.3 起 `sync.py` 自带防撞锁，后来者自动让路。）
 5. **目标形态（四机制）**：①网关/Hermes 启动后 ②全部静默 ≥N 分钟 ③每 2 小时 ④长静默（≥1h）结束即触发——①②④ 由一个哨兵轮询脚本统一实现（Hermes 无启动/会话原生钩子，条件触发只能轮询；静默判据＝`gateway_state.json`＋`processes.json`＋`session_turn_leases`＋`async_delegations`＋`messages.max(timestamp)` 复合）。

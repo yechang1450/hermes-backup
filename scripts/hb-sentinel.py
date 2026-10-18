@@ -1,0 +1,249 @@
+# -*- coding: utf-8 -*-
+"""hb-sentinel.py — hermes-cloud-backup 自动同步哨兵（watchdog）。
+
+由 Hermes 官方 cron 每 2 分钟调用（--no-agent 纯脚本、不过模型零 token）。
+职责 = 四机制之 ①②④：
+  ① 网关/Hermes 新启动                    → 触发一次同步
+  ② 全部对话静默 ≥5 分钟                  → 触发一次同步（每个静默期只触发一次）
+  ④ 长静默（≥1小时）结束、恢复活动的那一刻 → 触发一次同步
+  ③（每 2 小时）由另一个 cron 任务 hb-autosync.py 负责，不在本脚本内。
+
+静默判据（全部满足才算静默）：
+  · gateway_state.json：active_agents==0 且 active_work 为空
+  · processes.json：无活的后台任务
+  · 主档＋全部档 state.db：无未过期回合租约、无未完成委派
+  · 所有 state.db 的 messages.max(timestamp) 距今 ≥5 分钟
+
+触发约束：距上次实际完成同步须 ≥20 分钟；同步进行中（锁在）直接跳过。
+成功＝空输出（静默）；异常/失败输出摘要（会被 cron 投递）。
+调试：python hb-sentinel.py --debug （只读判读、不触发、不写状态）
+"""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+HOME = Path(os.environ.get("HERMES_HOME") or (LOCALAPPDATA / "hermes"))
+STATE_FILE = HOME / "state" / "hb-sentinel-state.json"
+SYNC_LOCK = HOME / "state" / "hermes-backup-sync.lock"
+SYNC_SCRIPT = HOME / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
+
+QUIET_SECONDS = 300          # ② 静默阈值：5 分钟（按全库最后一条消息计时）
+LONG_QUIET_SECONDS = 3600    # ④ 长静默阈值：1 小时
+MIN_SYNC_GAP = 20 * 60       # 距上次实际同步 ≥20 分钟才允许再触发
+SYNC_TIMEOUT = 3300          # 同步单轮上限（cron 脚本超时默认 3600）
+
+NOTES: list[str] = []
+
+
+def note(msg: str) -> None:
+    NOTES.append("[hb-sentinel %s] %s" % (datetime.now().strftime("%H:%M:%S"), msg))
+
+
+def mirror_meta() -> Path:
+    base = os.environ.get("HERMES_BACKUP_MIRROR")
+    cands = [Path(base)] if base else [Path("D:/hermes-backup"), Path.home() / "hermes-backup"]
+    for c in cands:
+        if (c / "meta" / "sync-state.json").is_file():
+            return c / "meta" / "sync-state.json"
+    return cands[0] / "meta" / "sync-state.json"
+
+
+SYNC_STATE = mirror_meta()
+
+
+def load_state() -> dict:
+    try:
+        return json.loads(STATE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_state(st: dict) -> None:
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    STATE_FILE.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def git_env() -> dict:
+    env = os.environ.copy()
+    tools = HOME / "tools"
+    if tools.is_dir():
+        cands = sorted(p for p in tools.glob("git-*") if (p / "cmd" / "git.exe").is_file())
+        if cands:
+            env["PATH"] = str(cands[-1] / "cmd") + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def gateway_start() -> object:
+    try:
+        return json.loads((HOME / "gateway.pid").read_text(encoding="utf-8")).get("start_time")
+    except Exception:
+        return None
+
+
+def busy_signals() -> tuple[list, float]:
+    """返回 (busy 原因列表, 全库最新消息时间戳)。"""
+    b: list = []
+    try:
+        gs = json.loads((HOME / "gateway_state.json").read_text(encoding="utf-8"))
+        if gs.get("active_agents"):
+            b.append("active_agents=%s" % gs["active_agents"])
+        if gs.get("active_work"):
+            b.append("active_work")
+    except Exception:
+        pass
+    try:
+        procs = json.loads((HOME / "processes.json").read_text(encoding="utf-8"))
+        if isinstance(procs, list) and procs:
+            b.append("background_procs=%d" % len(procs))
+    except Exception:
+        pass
+    now = time.time()
+    newest = 0.0
+    dbs = [HOME / "state.db"] + sorted((HOME / "profiles").glob("*/state.db"))
+    for db in dbs:
+        if not db.is_file():
+            continue
+        try:
+            con = sqlite3.connect("file:%s?mode=ro" % db.as_posix(), uri=True, timeout=5)
+            try:
+                try:
+                    ts = con.execute("SELECT max(timestamp) FROM messages").fetchone()[0]
+                    if ts:
+                        newest = max(newest, float(ts))
+                except Exception:
+                    pass
+                try:
+                    n = con.execute("SELECT COUNT(*) FROM session_turn_leases WHERE expires_at > ?",
+                                    (now,)).fetchone()[0]
+                    if n:
+                        b.append("turn_leases=%d(%s)" % (n, db.parent.name))
+                except Exception:
+                    pass
+                try:
+                    n = con.execute(
+                        "SELECT COUNT(*) FROM async_delegations WHERE completed_at IS NULL "
+                        "AND lower(COALESCE(state,'')) NOT IN "
+                        "('completed','failed','delivered','cancelled','canceled','expired','done')"
+                    ).fetchone()[0]
+                    if n:
+                        b.append("delegations=%d(%s)" % (n, db.parent.name))
+                except Exception:
+                    pass
+            finally:
+                con.close()
+        except Exception:
+            pass
+    if newest and now - newest <= QUIET_SECONDS:
+        b.append("recent_msg=%.0fs" % (now - newest))
+    return b, newest
+
+
+def last_sync_age() -> float | None:
+    try:
+        m = json.loads(SYNC_STATE.read_text(encoding="utf-8"))
+        fin = m.get("finished_at")
+        if fin:
+            return time.time() - datetime.fromisoformat(fin).timestamp()
+    except Exception:
+        pass
+    return None
+
+
+def run_sync(tag: str) -> bool:
+    note("触发同步：%s" % tag)
+    try:
+        p = subprocess.run([sys.executable, str(SYNC_SCRIPT)], capture_output=True, text=True,
+                           timeout=SYNC_TIMEOUT, env=git_env(), encoding="utf-8", errors="replace")
+    except Exception as e:
+        note("!! 同步异常：%r" % e)
+        return False
+    tail = ((p.stdout or "") + (p.stderr or "")).strip()
+    if p.returncode == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
+        note("同步完成 ok")
+        return True
+    note("!! 同步失败 rc=%s\n%s" % (p.returncode, tail[-800:]))
+    return False
+
+
+def main() -> int:
+    if "--debug" in sys.argv:
+        st = load_state()
+        busy, newest = busy_signals()
+        age = last_sync_age()
+        print("gw_start:", gateway_start(), "| stored:", st.get("gw_start"))
+        print("busy:", busy or "（无）",
+              "| newest_msg_age:", ("%.0fs" % (time.time() - newest)) if newest else "n/a")
+        print("quiet_from:", st.get("quiet_from"), "| synced_this_quiet:", st.get("synced_this_quiet"))
+        print("last_sync_age:", ("%.0fs" % age) if age is not None else "n/a",
+              "| fresh(20m):", age is not None and age < MIN_SYNC_GAP,
+              "| sync_running:", SYNC_LOCK.exists())
+        return 0
+
+    st = load_state()
+    now = time.time()
+    gw = gateway_start()
+    busy, newest = busy_signals()
+    sync_running = SYNC_LOCK.exists()
+    age = last_sync_age()
+    fresh = age is not None and age < MIN_SYNC_GAP
+    trigger = ""
+
+    # ① 网关新启动
+    if st.get("gw_start") is not None and gw is not None and gw != st.get("gw_start"):
+        if not fresh and not sync_running:
+            trigger = "gateway-restart"
+    st["gw_start"] = gw
+
+    # 静默期跟踪（②与④的共用状态）
+    if busy:
+        qf = st.get("quiet_from")
+        if qf is not None and (now - qf) >= LONG_QUIET_SECONDS and not trigger:
+            if not fresh and not sync_running:
+                trigger = "resume-after-long-quiet"
+        st["quiet_from"] = None
+        st["synced_this_quiet"] = False
+        st["last_busy_ts"] = now
+    else:
+        if st.get("quiet_from") is None:
+            st["quiet_from"] = now
+        qs = newest if newest else (st.get("quiet_from") or now)  # 5 分钟口径=自最后一条消息起算
+        if (now - qs) >= QUIET_SECONDS and not st.get("synced_this_quiet") and not trigger:
+            if not fresh and not sync_running:
+                trigger = "quiet-5min"
+                st["synced_this_quiet"] = True
+
+    ok = True
+    if trigger:
+        ok = run_sync(trigger)
+        st["last_trigger_ts"] = now
+        st["last_trigger_tag"] = trigger
+        st["last_trigger_ok"] = ok
+        if not ok:
+            st["synced_this_quiet"] = False   # 失败允许稍后重试（仍受 20 分钟新鲜度闸约束）
+    st["updated_at"] = datetime.now().astimezone().isoformat()
+    st["last_busy_reasons"] = busy[:6]
+    st["last_msg_age_s"] = int(now - newest) if newest else None
+    save_state(st)
+
+    if trigger and not ok:
+        for line in NOTES:
+            print(line, flush=True)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

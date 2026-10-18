@@ -74,6 +74,7 @@ pwsh -NoProfile -Command "(Invoke-CimMethod -ClassName Win32_Process -MethodName
 ## 7. 收尾
 
 - 恢复完成 = 本机成为线上版本的后代：此后 `python <技能目录>\scripts\sync.py` 继续日常同步。
+- 自动同步：v0.3+ 备份内含 `home-overlay/scripts/hb-*.py`，且 `cron/` 任务随备份恢复——重启后自动同步会自行继续；若备份来自旧版本，按技能 `references/auto-sync.md`「安装」节补装。
 - 若本机在恢复前产生了新数据：先 `git pull` 合并再同步；同名冲突 = 线上优先、本地另存（人工裁决）。
 
 ---

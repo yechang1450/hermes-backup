@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.3.4
+version: 0.3.5
 author: yechang1450, Hermes Agent
 license: MIT
 platforms: [windows]
@@ -13,7 +13,7 @@ metadata:
 
 # hermes-cloud-backup — Hermes 数据云备份 / 恢复
 
-> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。
+> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。
 
 把本机 Hermes 的全部状态（配置/凭据/记忆/技能/会话/桌面端数据）**线性同步**到一个
 **私有 GitHub 仓**（默认 `hermes-backup`，唯一权威版本在 GitHub），并支持在任何新机上
@@ -59,9 +59,11 @@ metadata:
 - `scripts/finish_restore.ps1` — 桌面端收尾器（等待退出 → 替换数据 → 重启网关/桌面端）
 - `scripts/hb-sentinel.py` — 自动同步哨兵（①启动 / ②静默≥5分钟 / ④长静默≥1h 恢复触发；安装=复制到 `HERMES_HOME\scripts\` 后由官方 cron 每 2 分钟调用）
 - `scripts/hb-autosync.py` — 周期同步（③每 2 小时；安装方式同上）
+- `scripts/export_all_profiles.py` — 单进程批量会话导出（sync 提速件；直调官方导出函数，与 CLI 输出逐字节一致，失败自动回退逐档 CLI）
 - `templates/RESTORE.md` — 新机恢复手册（编号步骤 + 验收清单）
 - `references/session-storage.md` — 会话存储格式与历史体积机制（v0.3 原样文本格式、实测方法、GitHub 链路限制）
 - `references/auto-sync.md` — 自动同步（watchdog 四机制）判定、静默信号源与实施顺序
+- `references/restore-drill.md` — 恢复侧验收演练配方（两遍独立演练标准、逐会话对账口径、判读坑）
 
 ## 流程 A：日常同步（源机）
 
@@ -97,7 +99,7 @@ metadata:
 - **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（新机上首次同步前设置一次即可）。
 - **GitHub 单文件 100MiB 硬限**：会话导出件按会话拆分；v0.3 起原样文本存储、>90MB 的巨会话按 90MB 切片（`<sid>.part-NNNN.jsonl`）——历史体积问题见下条。
 - **历史体积机制（关键）**：git 仓库＝最新快照＋**每个被改文件的每一版**——同步的「强制覆盖」语义只作用于最新树（≈镜像工作区），**挡不住历史堆积**（实测：全历史 blob 2.01GB vs 最新树 0.72GB；单会话 10 个版本＝313MB）。根因＝会话导出是**超长单行 JSON**、头部元数据每轮必变 × 整包 gzip → deflate 级联 → 版本间字节重叠 **0%** → git 增量全失效 → 每轮 ~226MB 完整入库（仓库 ~0.5GB/天）。**已治理（v0.3，0.3.0）＝原样文本格式：同数据对照实测 +79.40MB/轮 → +0.01MB（整件）/ +2.25MB（分片）级；机理与三方案对照见 `references/session-storage.md`。** 单文件 95MB 同步闸由分片格式顺带拆除（分片后最大件 90MB）；体积读数用**本地对象库**实测（GitHub `size` 字段有滞后）。
-- **意外中断与并发自愈**：v0.3 起自带单实例防撞锁（后到者让路、崩溃遗留 3h 接管）；被强杀遗留的 `.git/index.lock`（>120s）自动清除并重试一次。真机实测：进程在 `git add` 瞬间被杀后，下一轮同步曾因此报 `rc=128` —— 自愈代码即为覆盖该情形。
+- **意外中断与并发自愈**：自带单实例防撞锁——**v3.2 起锁内记录持有者 pid：持有进程已消失（触发端被掐/崩溃）立即接管，3h 陈旧窗仅兜底**（早期版本纯 3h 窗口＝被掐后可能空窗最长 3 小时）；被强杀遗留的 `.git/index.lock`（>120s）自动清除并重试一次。真机实测：进程在 `git add` 瞬间被杀 → 下一轮同步报 `rc=128` —— 自愈代码即为覆盖该情形；被掐轮次的**未推提交由下一轮随带补推（零丢失）**。
 - **失败诊断锚**：同步失败先读 ① `meta/sync-state.json` 的 `git_error` / `committed` / `pushed` / `finished_at`（失败路径也会写 meta）；② 镜像 `logs/last-run.log`（每轮全量日志）。**提交里的 meta 滞后一版**——write_meta 在 commit 之后执行，所以最新提交里包含的是**上一轮**的 sync-state（工作区 `meta/sync-state.json` 常显 modified，属正常，随下轮提交）。
 - **官方导入尺寸上限**（≤5MB/≤1万条/单次 ≤25MB 等）：面向 Web 场景；恢复工具在**本进程内**放宽这些常量（不改官方文件）。若官方改版导致常量改名，工具会记录并继续（检查 `hasattr`）。
 - **导出不脱敏**：会话文件含对话原文与凭据讨论 → 仓必须永远私有。
@@ -111,6 +113,8 @@ metadata:
 - 同步后：`meta/sync-state.json` 的 `pushed` 为 true；`git ls-remote origin` 与本地提交一致。
 - 恢复后：置顶对话在；微信/QQ 发消息能续接旧线程；群聊记录在；各档 `hermes -p <档> sessions stats` 数量与备份一致；主档出词正常（provider 可用）。
 - 全量验收入口：`templates/RESTORE.md` 第 6 节清单。
+- **全量审计（大改后或定期）**：四路核对（维护笔记③）＋版本字符串全扫（如 `grep -rn '0\.3\.' <技能目录>`，捕捉状态行/示例漂移）＋点火一轮真同步核 `git ls-remote` 前进；线上设置与隐私面 → `github-security-audit` 技能。
 - **验收以「最后同步时刻」为界**：快照之后的新会话/改动不在备份里（属预期，下轮同步带上）。对账做三向差集——真机∩快照（应精确一致）、真机−快照（＝同步后新建）、快照−真机（＝曾删除；快照保留历史）；给用户解释时先讲这层边界，避免把预期差异当故障。
 - **时间锚点**：报「损失窗口/新鲜度」前先实测当前时间（`date`）并按当下重算——隔夜或隔数轮后旧读数的时间锚（如「今晚」）即失效，禁止沿用旧时点表述。
 - **沙箱演示/验收**：在 `temp` 下克隆＋恢复（`--home` 指向沙箱），全程不动真机；大件会话（>6MB）可先改名加 `.hold` 后缀暂缓，中小件先跑完出对账，再恢复原名单独补入（总量不变）。
+- **恢复侧验收＝至少两遍独立全量演练、均 0 差异**（第二遍必须换仓状态＋换工具来源，不可省；配方、对账口径与判读坑 → `references/restore-drill.md`）。

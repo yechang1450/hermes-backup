@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3.2  (2026-10-18)
+"""hermes-cloud-backup · sync v3.3  (2026-10-20)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -20,6 +20,8 @@
     不压缩——预压缩（整包 gzip）会让头部元数据的任何变动把整份文件压缩后的字节
     全部改写，git 的增量(delta)机制失效、每轮把整包当新文件重存（实测 79MB/文件/轮）。
     原样文本让 git delta 直接命中未变区段（实测降到 ~0.01–2MB/文件/轮）。
+  · 会话导出（v3.3 提速）：默认单进程批量（export_all_profiles.py 直调官方导出函数，
+    与 CLI 输出逐字节一致，实测 ~8x）；失败自动回退逐档 `hermes sessions export`。
 
 安全闸（fail-closed）：
   · 采集完成后若发现单文件 >95MB 或镜像总量 >4GB -> 中止，不 commit 不 push
@@ -68,7 +70,8 @@ GIT_NAME = ""
 GIT_EMAIL = ""
 
 TOOL_FILES = ["sync.py", "concat_sessions.py", "apply_routing.py", "restore_sessions.py",
-              "restore_files.py", "run_in_runtime.py", "finish_restore.ps1"]
+              "restore_files.py", "run_in_runtime.py", "finish_restore.ps1",
+              "export_all_profiles.py"]
 
 
 def _skill_config() -> dict:
@@ -470,7 +473,56 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
     reset_dir(sessions_root)
     SCRATCH.mkdir(parents=True, exist_ok=True)
     exe = find_hermes_exe()
+    pdir = HERMES_HOME / "profiles"
 
+    def add_entry(name: str, raw: Path, extra: dict) -> None:
+        entry: dict = {"ok": True, "rc": 0, "sessions": 0, "files": 0, "bytes_total": 0,
+                       "max": 0, "max_file": "", "oversize": [], "skipped_gt_20k": []}
+        entry.update(extra)
+        if raw.exists():
+            stats = split_to_session_parts(raw, sessions_root / name)
+            raw.unlink()
+            entry.update(stats)
+        report["exports"][name] = entry
+        log(f"export {name}: sessions={entry['sessions']} files={entry['files']} "
+            f"raw={entry['bytes_total']/1048576:.1f}MB max={entry['max']/1048576:.1f}MB")
+
+    # ── 路径 A（默认，v3.3）：单进程批量导出＝官方导出函数直调（实测 ~8x；输出与 CLI 逐字节一致）──
+    wanted = ["main"]
+    if pdir.is_dir():
+        for d in sorted(pdir.iterdir()):
+            if d.is_dir() and not d.name.startswith(".") and (d / "profile.yaml").is_file():
+                wanted.append(d.name)
+    scripts_dir = Path(__file__).resolve().parent
+    runner, helper = scripts_dir / "run_in_runtime.py", scripts_dir / "export_all_profiles.py"
+    rawdir = SCRATCH / "bulk-export"
+    bulk_ok = runner.is_file() and helper.is_file()
+    if bulk_ok:
+        shutil.rmtree(rawdir, ignore_errors=True)
+        t0 = time.time()
+        try:
+            bp = subprocess.run([sys.executable, str(runner), str(helper),
+                                 "--home", str(HERMES_HOME), "--out", str(rawdir)],
+                                capture_output=True, text=True, timeout=3300)
+            if bp.returncode != 0:
+                bulk_ok = False
+                log(f"批量导出失败 rc={bp.returncode}：{(bp.stdout or bp.stderr or '').strip()[-300:]}")
+        except Exception as e:
+            bulk_ok = False
+            log(f"批量导出异常 {type(e).__name__}：回退逐档 CLI")
+        if bulk_ok:
+            missing = [n for n in wanted if not (rawdir / f"{n}.jsonl").exists()]
+            if missing:
+                bulk_ok = False
+                log(f"批量导出缺件 {missing}：回退逐档 CLI")
+            else:
+                log(f"批量导出完成：{len(wanted)} 档 / {time.time() - t0:.0f}s（单进程）")
+                for name in wanted:
+                    add_entry(name, rawdir / f"{name}.jsonl", {"via": "bulk"})
+                shutil.rmtree(rawdir, ignore_errors=True)
+                return
+
+    # ── 路径 B（回退）：逐档 hermes CLI（v3.2 行为，原样保留）──
     def do_one(name: str, profile: str | None) -> None:
         raw = SCRATCH / f"{name}.jsonl"
         if raw.exists():
@@ -484,7 +536,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         entry: dict = {"ok": p.returncode == 0, "rc": p.returncode, "sessions": 0,
                        "files": 0, "bytes_total": 0, "max": 0, "max_file": "",
                        "oversize": [], "skipped_gt_20k": skipped,
-                       "seconds": round(time.time() - t0, 1)}
+                       "seconds": round(time.time() - t0, 1), "via": "cli"}
         if raw.exists():
             stats = split_to_session_parts(raw, sessions_root / name)
             raw.unlink()
@@ -498,7 +550,6 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             f"skipped={len(skipped)} {entry['seconds']}s")
 
     do_one("main", None)
-    pdir = HERMES_HOME / "profiles"
     for d in sorted(pdir.iterdir()):
         if not (d.is_dir() and not d.name.startswith(".")):
             continue

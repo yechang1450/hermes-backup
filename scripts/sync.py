@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3.6  (2026-10-21)
+"""hermes-cloud-backup · sync v3.7  (2026-10-21)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -28,6 +28,9 @@
     （实测 git 提交段 8–10 分钟；干净树上同一操作仅 6 秒）。
   · 备份范围（v3.6）：kanban 只备数据库（boards/*/kanban.db）；任务运行工作区/证据/日志
     属过程记录不入云（实测占该目录 96%：758MB/4.3 万文件 → 30MB/84 库）。
+  · 数据仓换代（v3.7，2026-10-21）：第 1 代 `hermes-backup` 达 4.28GB 后冻结归档；
+    当前默认指向第 2 代 `hermes-backup-2026q4`（孤儿快照单提交种子，详见
+    references/generations.md）。换代=不停同步、不重写历史、可回退。
 
 安全闸（fail-closed）：
   · 采集完成后若发现单文件 >95MB 或镜像总量 >4GB -> 中止，不 commit 不 push
@@ -828,7 +831,7 @@ def main() -> int:
     ap.add_argument("--message", default="")
     ap.add_argument("--mirror", default="", help="镜像工作区目录（默认自动探测）")
     ap.add_argument("--owner", default="", help="GitHub 属主（默认从镜像 remote 或 gh 登录解析）")
-    ap.add_argument("--repo-name", default="hermes-backup", help="仓库名（默认 hermes-backup）")
+    ap.add_argument("--repo-name", default="hermes-backup-2026q4", help="仓库名（默认 hermes-backup-2026q4＝第 2 代仓；第 1 代 hermes-backup 已归档）")
     ap.add_argument("--remote", default="", help="显式指定 remote URL")
     ap.add_argument("--create-remote", action="store_true",
                     help="远端不存在时用 gh 创建私有仓")

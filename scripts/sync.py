@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3.5  (2026-10-21)
+"""hermes-cloud-backup · sync v3.6  (2026-10-21)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -26,6 +26,8 @@
     git 不重哈希）；过期文件/目录由 prune_stale / prune_unvisited 收敛（不再整目录清空重建）。
     背景：每轮重建覆盖层 4.5 万个小文件会让 ctime 全变，git 被迫每轮重哈希 ~3GB
     （实测 git 提交段 8–10 分钟；干净树上同一操作仅 6 秒）。
+  · 备份范围（v3.6）：kanban 只备数据库（boards/*/kanban.db）；任务运行工作区/证据/日志
+    属过程记录不入云（实测占该目录 96%：758MB/4.3 万文件 → 30MB/84 库）。
 
 安全闸（fail-closed）：
   · 采集完成后若发现单文件 >95MB 或镜像总量 >4GB -> 中止，不 commit 不 push
@@ -306,6 +308,16 @@ def prune_unvisited(root: Path) -> int:
     return removed
 
 
+def copy_kanban_dbs(src: Path, dst: Path) -> int:
+    """看板只备份数据库（boards/*/kanban.db）；run 工作区/证据/日志属过程记录，不入云备份。
+    实测：kanban 目录 758MB/4.3 万文件中 96% 是任务运行工作区（含整份 git 克隆）。"""
+    n = 0
+    for db in src.rglob("*.db"):
+        if db.is_file() and copy_file(db, dst / db.relative_to(src)):
+            n += 1
+    return n
+
+
 def copy_tree(src: Path, dst: Path, skip_dirs: set[str] | None = None) -> int:
     n = 0
     skip = (skip_dirs or set()) | EXCLUDE_DIRNAMES
@@ -347,6 +359,9 @@ def collect_home(report: dict) -> None:
     for d in HOME_DIRS:
         src = HERMES_HOME / d
         if not src.is_dir():
+            continue
+        if d == "kanban":
+            n += copy_kanban_dbs(src, dst_root / d)
             continue
         skip = {".hub"} if d == "skills" else set()
         n += copy_tree(src, dst_root / d, skip_dirs=skip)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3.3  (2026-10-20)
+"""hermes-cloud-backup · sync v3.5  (2026-10-21)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -22,6 +22,10 @@
     原样文本让 git delta 直接命中未变区段（实测降到 ~0.01–2MB/文件/轮）。
   · 会话导出（v3.3 提速）：默认单进程批量（export_all_profiles.py 直调官方导出函数，
     与 CLI 输出逐字节一致，实测 ~8x）；失败自动回退逐档 `hermes sessions export`。
+  · 写入跳过（v3.4/v3.5）：会话文件与全部覆盖层文件「内容相同就不重写」（时间戳不动→
+    git 不重哈希）；过期文件/目录由 prune_stale / prune_unvisited 收敛（不再整目录清空重建）。
+    背景：每轮重建覆盖层 4.5 万个小文件会让 ctime 全变，git 被迫每轮重哈希 ~3GB
+    （实测 git 提交段 8–10 分钟；干净树上同一操作仅 6 秒）。
 
 安全闸（fail-closed）：
   · 采集完成后若发现单文件 >95MB 或镜像总量 >4GB -> 中止，不 commit 不 push
@@ -258,12 +262,48 @@ def ignored(name: str) -> bool:
     return any(fnmatch.fnmatch(name, pat) for pat in EXCLUDE_PATTERNS)
 
 
+_COPIED: set[str] = set()    # 本轮实际保留的镜像侧路径（供 prune_unvisited 收敛）
+
+
 def copy_file(src: Path, dst: Path) -> bool:
     if ignored(src.name):
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
+    _COPIED.add(str(dst))
+    try:
+        st = src.stat()
+        if dst.exists():
+            dt = dst.stat()
+            if dt.st_size == st.st_size and int(dt.st_mtime) == int(st.st_mtime):
+                return True                     # 大小+mtime 一致＝未变：完全不碰（保镜像侧 ctime/mtime→git 不重哈希）
+            if dt.st_size == st.st_size and dst.read_bytes() == src.read_bytes():
+                return True                     # 内容一致：不重写（时间戳不动）
+    except OSError:
+        pass
     shutil.copy2(src, dst)
     return True
+
+
+def prune_unvisited(root: Path) -> int:
+    """删掉本轮采集未保留的镜像侧文件与空目录（源侧已删除的残留）。"""
+    removed = 0
+    for r, dirs, files in os.walk(root, topdown=False):
+        for f in files:
+            p = Path(r) / f
+            if str(p) not in _COPIED:
+                try:
+                    p.unlink()
+                    removed += 1
+                except OSError:
+                    pass
+        for d in dirs:
+            dp = Path(r) / d
+            try:
+                if not any(dp.iterdir()):
+                    dp.rmdir()
+            except OSError:
+                pass
+    return removed
 
 
 def copy_tree(src: Path, dst: Path, skip_dirs: set[str] | None = None) -> int:
@@ -297,7 +337,7 @@ def reset_dir(d: Path) -> None:
 # ---------- 采集 ----------
 def collect_home(report: dict) -> None:
     dst_root = MIRROR / "home-overlay"
-    reset_dir(dst_root)
+    dst_root.mkdir(parents=True, exist_ok=True)      # 不清空：未变文件原样保留（保 ctime→git 不重哈希）
     n = 0
     for f in HOME_FILES:
         src = HERMES_HOME / f
@@ -315,12 +355,15 @@ def collect_home(report: dict) -> None:
         if src.is_file():
             copy_file(src, MIRROR / "home-overlay" / f)
             n += 1
+    gone = prune_unvisited(dst_root)
+    if gone:
+        log(f"home-overlay 清理：移除 {gone} 个残留文件")
     report["home_files"] = n
 
 
 def collect_profiles(report: dict) -> None:
     dst_root = MIRROR / "profiles-overlay"
-    reset_dir(dst_root)
+    dst_root.mkdir(parents=True, exist_ok=True)
     pdir = HERMES_HOME / "profiles"
     names = (sorted(d.name for d in pdir.iterdir()
                     if d.is_dir() and not d.name.startswith(".")
@@ -340,12 +383,14 @@ def collect_profiles(report: dict) -> None:
             if src.is_dir():
                 n += copy_tree(src, dst_root / name / d, skip_dirs={".hub"} if d == "skills" else None)
         report["profiles"][name] = n
-    log(f"profiles: {len(names)} 档, {sum(report['profiles'].values())} 文件")
+    gone = prune_unvisited(dst_root)
+    log(f"profiles: {len(names)} 档, {sum(report['profiles'].values())} 文件"
+        + (f"（清理 {gone} 个残留）" if gone else ""))
 
 
 def collect_desktop(report: dict) -> None:
     dst_root = MIRROR / "desktop-overlay"
-    reset_dir(dst_root)
+    dst_root.mkdir(parents=True, exist_ok=True)
     n = 0
     for f in ROAMING_FILES:
         src = ROAMING / f
@@ -356,6 +401,9 @@ def collect_desktop(report: dict) -> None:
         src = ROAMING / d
         if src.is_dir():
             n += copy_tree(src, dst_root / d)
+    gone = prune_unvisited(dst_root)
+    if gone:
+        log(f"desktop-overlay 清理：移除 {gone} 个残留文件")
     report["desktop_files"] = n
 
 
@@ -437,7 +485,8 @@ def split_to_session_parts(raw: Path, outdir: Path) -> dict:
     git 的增量(delta)机制由此失效——每轮同步都把整包当新文件重存（实测 79MB/文件/轮）。
     原样存文本后，git delta 直接命中未变区段（实测降到 ~0.01–2MB/文件/轮）。"""
     outdir.mkdir(parents=True, exist_ok=True)
-    stats = {"sessions": 0, "files": 0, "bytes_total": 0, "max": 0, "max_file": "", "oversize": []}
+    stats = {"sessions": 0, "files": 0, "bytes_total": 0, "max": 0, "max_file": "",
+             "oversize": [], "_files": []}
     seen: dict[str, int] = {}
     with open(raw, "rb") as fin:
         for idx, ln in enumerate(fin):
@@ -454,8 +503,16 @@ def split_to_session_parts(raw: Path, outdir: Path) -> dict:
                 outs = [(outdir / f"{sid}.part-{k // PART_MAX + 1:04d}.jsonl", ln[k:k + PART_MAX])
                         for k in range(0, len(ln), PART_MAX)]
             for path, blob in outs:
-                path.write_bytes(blob)
                 size = len(blob)
+                same = False
+                if path.exists() and path.stat().st_size == size:
+                    try:
+                        same = path.read_bytes() == blob     # 内容相同就不重写：保住 mtime→git 跳过整树重哈希
+                    except OSError:
+                        same = False
+                if not same:
+                    path.write_bytes(blob)
+                stats["_files"].append(path.name)
                 stats["files"] += 1
                 stats["bytes_total"] += size
                 if size > stats["max"]:
@@ -465,15 +522,36 @@ def split_to_session_parts(raw: Path, outdir: Path) -> dict:
     return stats
 
 
+def prune_stale(sessions_root: Path, keep: dict[str, set[str]]) -> None:
+    """删掉本轮导出集合之外的旧文件（会话已删除 / 档已不存在），其余原样保留、mtime 不动。
+    「不重写未变文件」的前提是目录不再整清空——收敛任务由这里承担。"""
+    removed = 0
+    for d in sorted(sessions_root.iterdir()):
+        if not d.is_dir():
+            continue
+        names = keep.get(d.name)
+        if names is None:
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+            continue
+        for f in d.iterdir():
+            if f.is_file() and f.name not in names:
+                f.unlink()
+                removed += 1
+    if removed:
+        log(f"sessions 清理：移除 {removed} 个过期文件/目录")
+
+
 def export_sessions(report: dict, skip_exports: bool) -> None:
     report["exports"] = {}
     if skip_exports:
         return
     sessions_root = MIRROR / "sessions"
-    reset_dir(sessions_root)
+    sessions_root.mkdir(parents=True, exist_ok=True)   # 不清空：内容未变的会话文件保持原样（mtime 不动→git 不重哈希）
     SCRATCH.mkdir(parents=True, exist_ok=True)
     exe = find_hermes_exe()
     pdir = HERMES_HOME / "profiles"
+    keep: dict[str, set[str]] = {}
 
     def add_entry(name: str, raw: Path, extra: dict) -> None:
         entry: dict = {"ok": True, "rc": 0, "sessions": 0, "files": 0, "bytes_total": 0,
@@ -483,6 +561,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             stats = split_to_session_parts(raw, sessions_root / name)
             raw.unlink()
             entry.update(stats)
+            keep[name] = set(entry.pop("_files", []))
         report["exports"][name] = entry
         log(f"export {name}: sessions={entry['sessions']} files={entry['files']} "
             f"raw={entry['bytes_total']/1048576:.1f}MB max={entry['max']/1048576:.1f}MB")
@@ -520,6 +599,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
                 for name in wanted:
                     add_entry(name, rawdir / f"{name}.jsonl", {"via": "bulk"})
                 shutil.rmtree(rawdir, ignore_errors=True)
+                prune_stale(sessions_root, keep)
                 return
 
     # ── 路径 B（回退）：逐档 hermes CLI（v3.2 行为，原样保留）──
@@ -541,6 +621,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             stats = split_to_session_parts(raw, sessions_root / name)
             raw.unlink()
             entry.update(stats)
+            keep[name] = set(entry.pop("_files", []))
         if p.returncode != 0 or skipped:
             entry["tail"] = out.strip()[-600:]
         report["exports"][name] = entry
@@ -557,6 +638,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             log(f"export {d.name}: 跳过（目录存在但 profile 未注册）")
             continue
         do_one(d.name, d.name)
+    prune_stale(sessions_root, keep)
 
 
 def dump_routing(report: dict) -> None:
@@ -658,6 +740,7 @@ def commit_and_push(message: str, no_push: bool) -> dict:
     if (MIRROR / ".git" / "MERGE_HEAD").exists():
         raise RuntimeError("仓库处于未完成的 merge 状态，请人工处理后重跑")
     purge_index_lock(120)
+    t0 = time.time()
     try:
         git("add", "-A")
     except RuntimeError as e:
@@ -670,12 +753,14 @@ def commit_and_push(message: str, no_push: bool) -> dict:
     if status:
         git("commit", "-m", message)
         result["committed"] = True
+        log(f"git 提交完成：{time.time() - t0:.0f}s（含 add 与自动 gc）")
     else:
         result["committed"] = False
         log("无变更，跳过 commit")
     if no_push:
         result["pushed"] = None
         return result
+    t1 = time.time()
     p = git("push", "-u", "origin", "main", check=False)
     if p.returncode != 0:
         log("push 被拒（可能线上有新提交）→ pull --no-rebase 后重试")
@@ -686,6 +771,7 @@ def commit_and_push(message: str, no_push: bool) -> dict:
         p = git("push", "-u", "origin", "main", check=False)
     if p.returncode != 0:
         raise RuntimeError(f"push 失败：{(p.stderr or p.stdout).strip()[:400]}")
+    log(f"git 推送完成：{time.time() - t1:.0f}s")
     result["pushed"] = True
     return result
 

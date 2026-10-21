@@ -18,6 +18,59 @@ HOME = Path(os.environ.get("HERMES_HOME") or (LOCALAPPDATA / "hermes"))
 SYNC_SCRIPT = HOME / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
 MIN_SYNC_GAP = 20 * 60
 SYNC_TIMEOUT = 3300
+CHILD_LOG = HOME / "state" / "hb-sync-child.log"
+
+
+def run_sync() -> subprocess.CompletedProcess:
+    """跑 sync.py，子进程输出**流式落盘**（超时被掐也留有阶段证据）。"""
+    CHILD_LOG.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if CHILD_LOG.exists() and CHILD_LOG.stat().st_size > 5 * 1024 * 1024:
+            CHILD_LOG.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+    with open(CHILD_LOG, "a", encoding="utf-8", errors="replace") as lf:
+        lf.write("\n===== %s 开始 =====\n" % datetime.now().astimezone().isoformat(timespec="seconds"))
+        lf.flush()
+        return subprocess.run([sys.executable, str(SYNC_SCRIPT)], stdout=lf,
+                              stderr=subprocess.STDOUT, timeout=SYNC_TIMEOUT, env=git_env(),
+                              creationflags=getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
+
+
+def child_log_tail(n: int = 4000) -> str:
+    try:
+        return CHILD_LOG.read_text(encoding="utf-8", errors="replace")[-n:]
+    except OSError:
+        return ""
+
+
+HEALTH = HOME / "state" / "hb-sync-health.json"
+MARKER = HOME / "state" / "hb-sync-needs-attention"
+
+
+def bump(ok: bool) -> int:
+    """连续失败计数；>=3 轮失败写一个待查看标记文件（不推送、不打扰）。"""
+    try:
+        h = json.loads(HEALTH.read_text(encoding="utf-8"))
+    except Exception:
+        h = {}
+    n = 0 if ok else int(h.get("consecutive_failures", 0)) + 1
+    h["consecutive_failures"] = n
+    h["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    try:
+        HEALTH.parent.mkdir(parents=True, exist_ok=True)
+        HEALTH.write_text(json.dumps(h, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        if n >= 3:
+            MARKER.write_text("连续 %d 轮同步失败（最后一轮 %s）；日志：%s\n"
+                              % (n, h["updated_at"], CHILD_LOG), encoding="utf-8")
+        elif ok and MARKER.exists():
+            MARKER.unlink()
+    except OSError:
+        pass
+    return n
 
 
 def mirror_meta() -> Path:
@@ -51,14 +104,21 @@ def main() -> int:
     except Exception:
         pass
     try:
-        p = subprocess.run([sys.executable, str(SYNC_SCRIPT)], capture_output=True, text=True,
-                           timeout=SYNC_TIMEOUT, env=git_env(), encoding="utf-8", errors="replace")
+        p = run_sync()
+    except subprocess.TimeoutExpired:
+        bump(False)
+        print("[hb-autosync] 同步超时（%ss）——子进程已终止；阶段日志尾：\n%s"
+              % (SYNC_TIMEOUT, child_log_tail(1200)), flush=True)
+        return 1
     except Exception as e:
+        bump(False)
         print("[hb-autosync] 同步异常：%r" % e, flush=True)
         return 1
-    tail = ((p.stdout or "") + (p.stderr or "")).strip()
+    tail = child_log_tail()
     if p.returncode == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
+        bump(True)
         return 0
+    bump(False)
     print("[hb-autosync] 同步失败 rc=%s\n%s" % (p.returncode, tail[-800:]), flush=True)
     return 1
 

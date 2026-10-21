@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.3.6
+version: 0.3.7
 author: yechang1450, Hermes Agent
 license: MIT
 platforms: [windows]
@@ -58,7 +58,7 @@ metadata:
 - `scripts/concat_sessions.py` — 会话拼包（桌面端「导入」按钮用）
 - `scripts/finish_restore.ps1` — 桌面端收尾器（等待退出 → 替换数据 → 重启网关/桌面端）
 - `scripts/hb-sentinel.py` — 自动同步哨兵（①启动 / ②静默≥5分钟 / ④长静默≥1h 恢复触发；安装=复制到 `HERMES_HOME\scripts\` 后由官方 cron 每 2 分钟调用）
-- `scripts/hb-autosync.py` — 周期同步（③每 2 小时；安装方式同上）
+- `scripts/hb-autosync.py` — 周期同步（③每 2 小时；安装方式同上）；与哨兵共用 `state/hb-sync-child.log`（子进程输出流式落盘）与 `state/hb-sync-health.json`（连续失败计数 + needs-attention 标记）
 - `scripts/export_all_profiles.py` — 单进程批量会话导出（sync 提速件；直调官方导出函数，与 CLI 输出逐字节一致，失败自动回退逐档 CLI）
 - `templates/RESTORE.md` — 新机恢复手册（编号步骤 + 验收清单）
 - `references/session-storage.md` — 会话存储格式与历史体积机制（v0.3 原样文本格式、实测方法、GitHub 链路限制）
@@ -101,7 +101,7 @@ metadata:
 - **历史体积机制（关键）**：git 仓库＝最新快照＋**每个被改文件的每一版**——同步的「强制覆盖」语义只作用于最新树（≈镜像工作区），**挡不住历史堆积**（实测：全历史 blob 2.01GB vs 最新树 0.72GB；单会话 10 个版本＝313MB）。根因＝会话导出是**超长单行 JSON**、头部元数据每轮必变 × 整包 gzip → deflate 级联 → 版本间字节重叠 **0%** → git 增量全失效 → 每轮 ~226MB 完整入库（仓库 ~0.5GB/天）。**已治理（v0.3，0.3.0）＝原样文本格式：同数据对照实测 +79.40MB/轮 → +0.01MB（整件）/ +2.25MB（分片）级；机理与三方案对照见 `references/session-storage.md`。** 单文件 95MB 同步闸由分片格式顺带拆除（分片后最大件 90MB）；体积读数用**本地对象库**实测（GitHub `size` 字段有滞后）。
 - **意外中断与并发自愈**：自带单实例防撞锁——**v3.2 起锁内记录持有者 pid：持有进程已消失（触发端被掐/崩溃）立即接管，3h 陈旧窗仅兜底**（早期版本纯 3h 窗口＝被掐后可能空窗最长 3 小时）；被强杀遗留的 `.git/index.lock`（>120s）自动清除并重试一次。真机实测：进程在 `git add` 瞬间被杀 → 下一轮同步报 `rc=128` —— 自愈代码即为覆盖该情形；被掐轮次的**未推提交由下一轮随带补推（零丢失）**。- **网关重启与在跑轮次的三种组合**（先取证据、都别慌）：① drain 杀掉父脚本、`sync.py` 作为**脱离进程继续跑完**——`hermes cron runs` 会停在 `running` 或落 `unknown`，**判轮次死活只认锁文件里的 pid 存活**（存活＝还在跑、会自行落地；已死＝孤儿锁由下一轮立即接管）；② 在途提交被掐——判「有没有丢数据」**不看 run 状态**，用 `git merge-base --is-ancestor <该轮提交> <远端HEAD>`：命中＝已进远端历史、零丢失；未命中才去查采集/推送段；③ 父脚本被杀时外层超时兜底一并消失 ⇒ 该轮不受 `script_timeout` 约束，必要时人工盯或回收。另：两轮相撞时后来者**立即让路**（日志 `已有另一轮同步在进行（锁年龄 Ns）——本轮退出，让路`）——设计行为，不是失败。
 - **失败诊断锚**：同步失败先读 ① `meta/sync-state.json` 的 `git_error` / `committed` / `pushed` / `finished_at`（失败路径也会写 meta）；② 镜像 `logs/last-run.log`（每轮全量日志）。**提交里的 meta 滞后一版**——write_meta 在 commit 之后执行，所以最新提交里包含的是**上一轮**的 sync-state（工作区 `meta/sync-state.json` 常显 modified，属正常，随下轮提交）。
-- **慢轮诊断（阶段预算＋廉价探针）**：正常档一轮 5–8 分钟（收集 1–2 分钟 / 批量导出 ~2 分钟 / 拆分＋`git add` 秒级 / 提交与推送 1–3 分钟）；明显超出即按段找放大器。**`logs/last-run.log` 在轮次结束时整份落盘，中途没有文件可读** ⇒ 要么等落地，要么用廉价探针：锁文件 pid 存活（`ps -W`）、`.git/index.lock` 存在＝正在 add/commit、`git count-objects -v` 的 loose 数、包文件 mtime（repack 痕迹）、进程 IO/CPU（psutil）。**轮次未结束时不要对镜像跑全树重探针**（`du -sm`、`git status`、递归 ls）：持索引锁时 `git status` 会挂住、大目录 `du` 会跑满超时。日志内建阶段行：`git 提交完成：Ns（含 add 与自动 gc）`、`git 推送完成：Ns`。三类已治理的放大器：每档一次 CLI 启动的固定开销 → 单进程批量导出；每轮全量重写→mtime 抖动→git 重哈希整树 → 写前比对、未变不重写；`git gc --auto` 全量 repack（松散对象过阈值即整包重写、可耗十分钟）→ 压降每轮对象产出即自然摊薄，**勿关 `gc.auto`**（保持 git 默认行为）。
+- **慢轮诊断（阶段预算＋廉价探针）**：正常档一轮 5–8 分钟（收集 1–2 分钟 / 批量导出 ~2 分钟 / 拆分＋`git add` 秒级 / 提交与推送 1–3 分钟）；明显超出即按段找放大器。**`logs/last-run.log` 在轮次结束时整份落盘，中途没有文件可读** ⇒ 要么等落地，要么用廉价探针：锁文件 pid 存活（`ps -W`）、`.git/index.lock` 存在＝正在 add/commit、`git count-objects -v` 的 loose 数、包文件 mtime（repack 痕迹）、进程 IO/CPU（psutil）。**轮次未结束时不要对镜像跑全树重探针**（`du -sm`、`git status`、递归 ls）：持索引锁时 `git status` 会挂住、大目录 `du` 会跑满超时。日志内建阶段行：`git 提交完成：Ns（含 add 与自动 gc）`、`git 推送完成：Ns`。**包装脚本必须把子进程输出流式落盘**（`stdout=<文件句柄>`，不要 `capture_output`）：超时被掐的那一刻 `capture_output` 会连子进程 stdout 一起丢，超时轮就变成零证据；落盘后从日志尾直接指认卡在哪个阶段，成功仍以「日志尾含完成标记」判定（保持静默）。**归因先做对照实验**：干净树上跑同一条 git 命令（`git add -A` 秒级返回＝git 本身不慢，慢在索引被打脏后的整树重哈希），别急着赖 gc 或网络。三类已治理的放大器：每档一次 CLI 启动的固定开销 → 单进程批量导出；**重建式采集**（清空目录再重拷——copy2 保得住 mtime，但文件重建让 ctime 全变，git 判索引失效、整树重哈希 ~3GB，实测提交段 8–10 分钟）→ 写前比对「内容相同不重写」＋ prune 收敛（覆盖层与 sessions 同一把刀）；`git gc --auto` 全量 repack（松散对象过阈值即整包重写、可耗十分钟）→ 压降每轮对象产出即自然摊薄，**勿关 `gc.auto`**（保持 git 默认行为）。
 - **官方导入尺寸上限**（≤5MB/≤1万条/单次 ≤25MB 等）：面向 Web 场景；恢复工具在**本进程内**放宽这些常量（不改官方文件）。若官方改版导致常量改名，工具会记录并继续（检查 `hasattr`）。
 - **导出不脱敏**：会话文件含对话原文与凭据讨论 → 仓必须永远私有。
 - **桌面端 Local Storage 被占用**：群聊/置顶数据只有桌面端退出后才能安全覆盖 → 收尾器处理。
@@ -112,6 +112,7 @@ metadata:
 ## Verification
 
 - 同步后：`meta/sync-state.json` 的 `pushed` 为 true；`git ls-remote origin` 与本地提交一致。
+- **每轮结构化记录**：`$HERMES_HOME/state/hb-sync-runs.jsonl` 一行一轮（时长／分段耗时 collect·export·git／退出码／committed·pushed／字节数）——追轮次历史、算成功率与分段成本先读它；连续失败计数在 `state/hb-sync-health.json`，≥3 轮失败写 `state/hb-sync-needs-attention` 标记（不推送、不打扰，成功一轮自动清）。
 - 恢复后：置顶对话在；微信/QQ 发消息能续接旧线程；群聊记录在；各档 `hermes -p <档> sessions stats` 数量与备份一致；主档出词正常（provider 可用）。
 - 全量验收入口：`templates/RESTORE.md` 第 6 节清单。
 - **全量审计（大改后或定期）**：四路核对（维护笔记③）＋版本字符串全扫（如 `grep -rn '0\.3\.' <技能目录>`，捕捉状态行/示例漂移）＋点火一轮真同步核 `git ls-remote` 前进；线上设置与隐私面 → `github-security-audit` 技能。

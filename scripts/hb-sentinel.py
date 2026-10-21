@@ -157,15 +157,39 @@ def last_sync_age() -> float | None:
     return None
 
 
+CHILD_LOG = HOME / "state" / "hb-sync-child.log"
+
+
+def child_log_tail(n: int = 4000) -> str:
+    try:
+        return CHILD_LOG.read_text(encoding="utf-8", errors="replace")[-n:]
+    except OSError:
+        return ""
+
+
 def run_sync(tag: str) -> bool:
     note("触发同步：%s" % tag)
+    CHILD_LOG.parent.mkdir(parents=True, exist_ok=True)
     try:
-        p = subprocess.run([sys.executable, str(SYNC_SCRIPT)], capture_output=True, text=True,
-                           timeout=SYNC_TIMEOUT, env=git_env(), encoding="utf-8", errors="replace")
+        if CHILD_LOG.exists() and CHILD_LOG.stat().st_size > 5 * 1024 * 1024:
+            CHILD_LOG.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        with open(CHILD_LOG, "a", encoding="utf-8", errors="replace") as lf:
+            lf.write("\n===== %s 开始（哨兵触发：%s）=====\n"
+                     % (datetime.now().astimezone().isoformat(timespec="seconds"), tag))
+            lf.flush()
+            p = subprocess.run([sys.executable, str(SYNC_SCRIPT)], stdout=lf,
+                               stderr=subprocess.STDOUT, timeout=SYNC_TIMEOUT, env=git_env(),
+                               creationflags=getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
+    except subprocess.TimeoutExpired:
+        note("!! 同步超时（%ss）——阶段日志尾：\n%s" % (SYNC_TIMEOUT, child_log_tail(1200)))
+        return False
     except Exception as e:
         note("!! 同步异常：%r" % e)
         return False
-    tail = ((p.stdout or "") + (p.stderr or "")).strip()
+    tail = child_log_tail()
     if p.returncode == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
         note("同步完成 ok")
         return True

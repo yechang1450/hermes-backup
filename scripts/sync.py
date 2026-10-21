@@ -582,10 +582,12 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         try:
             bp = subprocess.run([sys.executable, str(runner), str(helper),
                                  "--home", str(HERMES_HOME), "--out", str(rawdir)],
-                                capture_output=True, text=True, timeout=3300)
+                                capture_output=True, text=True, timeout=2000)  # 导出阶段预算 33 分钟
             if bp.returncode != 0:
                 bulk_ok = False
                 log(f"批量导出失败 rc={bp.returncode}：{(bp.stdout or bp.stderr or '').strip()[-300:]}")
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("export_timeout（批量导出超过 2000s 预算）")
         except Exception as e:
             bulk_ok = False
             log(f"批量导出异常 {type(e).__name__}：回退逐档 CLI")
@@ -610,7 +612,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         cmd = [exe] + (["-p", profile] if profile else []) + \
               ["sessions", "export", "--format", "jsonl", str(raw)]
         t0 = time.time()
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
         out = (p.stdout or "") + "\n" + (p.stderr or "")
         skipped = sorted(set(re.findall(r"Session '([0-9A-Za-z_]+)' has more than", out)))
         entry: dict = {"ok": p.returncode == 0, "rc": p.returncode, "sessions": 0,
@@ -684,9 +686,9 @@ def size_audit() -> tuple[list[tuple[str, int]], int]:
 
 
 # ---------- git ----------
-def git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+def git(*args: str, check: bool = True, timeout: float | None = None) -> subprocess.CompletedProcess:
     p = subprocess.run(["git", "-C", str(MIRROR), *args],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=timeout)
     if check and p.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} -> rc={p.returncode}: "
                            f"{(p.stderr or p.stdout).strip()[:500]}")
@@ -761,14 +763,14 @@ def commit_and_push(message: str, no_push: bool) -> dict:
         result["pushed"] = None
         return result
     t1 = time.time()
-    p = git("push", "-u", "origin", "main", check=False)
+    p = git("push", "-u", "origin", "main", check=False, timeout=600)  # push 阶段预算 10 分钟
     if p.returncode != 0:
         log("push 被拒（可能线上有新提交）→ pull --no-rebase 后重试")
-        pull = git("pull", "--no-rebase", "origin", "main", check=False)
+        pull = git("pull", "--no-rebase", "origin", "main", check=False, timeout=600)
         if pull.returncode != 0:
             git("merge", "--abort", check=False)
             raise RuntimeError(f"pull/merge 失败：{(pull.stderr or pull.stdout).strip()[:400]}")
-        p = git("push", "-u", "origin", "main", check=False)
+        p = git("push", "-u", "origin", "main", check=False, timeout=600)
     if p.returncode != 0:
         raise RuntimeError(f"push 失败：{(p.stderr or p.stdout).strip()[:400]}")
     log(f"git 推送完成：{time.time() - t1:.0f}s")
@@ -835,16 +837,28 @@ def main() -> int:
     }
     log(f"sync 开始 host={report['host']} home={report['hermes_home']}")
 
+    t_ph = time.time()
     collect_home(report)
     collect_profiles(report)
     collect_desktop(report)
     sync_tools(report)
-    export_sessions(report, args.skip_exports)
+    report["timings"] = {"collect": round(time.time() - t_ph, 1)}
+    t_ph = time.time()
+    try:
+        export_sessions(report, args.skip_exports)
+    except RuntimeError as e:
+        log(f"!! 导出阶段失败：{e}")
+        report["aborted"] = str(e)
+        write_meta(report, t0)
+        append_run(report, t0, 2)
+        return 2
+    report["timings"]["export"] = round(time.time() - t_ph, 1)
     over = {n: e["oversize"] for n, e in report.get("exports", {}).items() if e.get("oversize")}
     if over:
         log(f"!! 采集出现超限单文件（>{SIZE_GUARD_FILE // 1048576}MB），中止（不 commit/push）：{over}")
         report["aborted"] = "oversize_session"
         write_meta(report, t0)
+        append_run(report, t0, 2)
         return 2
     dump_routing(report)
 
@@ -856,39 +870,76 @@ def main() -> int:
             log(f"   {path} = {s/1048576:.1f}MB")
         report["aborted"] = "oversize_file"
         write_meta(report, t0)
+        append_run(report, t0, 2)
         return 2
     if total > SIZE_GUARD_TOTAL:
         log(f"!! 镜像总量 {total/1048576:.0f}MB 超上限，中止（不 commit/push）")
         report["aborted"] = "oversize_total"
         write_meta(report, t0)
+        append_run(report, t0, 2)
         return 2
 
     if args.collect_only:
         log(f"采集完成（collect-only）：总量 {total/1048576:.1f}MB")
         write_meta(report, t0)
+        append_run(report, t0, 0)
         return 0
 
     if not args.no_push:
         _maybe_create_remote(args.create_remote)
         if not ensure_private(report):
             write_meta(report, t0)
+            append_run(report, t0, 4)
             return 4
     msg = args.message or f"sync {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %z')} host={report['host']}"
+    t_ph = time.time()
     try:
         git_result = commit_and_push(msg, args.no_push)
         report.update(git_result)
-    except RuntimeError as e:
+    except (RuntimeError, subprocess.TimeoutExpired) as e:
         log(f"!! git 环节失败：{e}")
         report["git_error"] = str(e)
         write_meta(report, t0)
+        append_run(report, t0, 3)
         return 3
+    report["timings"]["git"] = round(time.time() - t_ph, 1)
 
     report["finished_at"] = datetime.now().astimezone().isoformat()
     report["duration_seconds"] = round(time.time() - t0, 1)
     write_meta(report, t0)
     log(f"sync 完成：{report['duration_seconds']}s 总量 {total/1048576:.1f}MB "
         f"committed={report.get('committed')} pushed={report.get('pushed')}")
+    append_run(report, t0, 0)
     return 0
+
+
+RUNS_LOG = HERMES_HOME / "state" / "hb-sync-runs.jsonl"
+
+
+def append_run(report: dict, t0: float, exit_code: int) -> None:
+    """每轮一行结构化记录（runs.jsonl）——验收/排障的唯一客观证据。"""
+    try:
+        RUNS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        exports = report.get("exports", {}) or {}
+        line = {
+            "start_ts": report.get("started_at"),
+            "end_ts": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "duration_s": round(time.time() - t0, 1),
+            "exit_code": exit_code,
+            "timings": report.get("timings", {}),
+            "sessions": sum(e.get("sessions", 0) for e in exports.values()),
+            "files": sum(e.get("files", 0) for e in exports.values()),
+            "size_total_mb": round((report.get("size_total_bytes") or 0) / 1048576, 1),
+            "committed": report.get("committed"),
+            "pushed": report.get("pushed"),
+            "aborted": report.get("aborted"),
+            "git_error": (report.get("git_error") or "")[:200],
+            "via": ("bulk" if any(e.get("via") == "bulk" for e in exports.values()) else "cli"),
+        }
+        with open(RUNS_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+    except Exception as e:
+        log(f"!! 写 runs.jsonl 失败：{e!r}")
 
 
 def write_meta(report: dict, t0: float) -> None:

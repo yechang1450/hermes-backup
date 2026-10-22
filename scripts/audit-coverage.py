@@ -122,12 +122,106 @@ def session_started(db: Path, sid: str) -> float | None:
         con.close()
 
 
+def file_layer_report(home: Path, repo: Path) -> dict:
+    """文件层覆盖：HERMES_HOME 顶层条目 vs 采集白名单（直接读 sync.py 的常量，单一来源）。
+
+    分类：采集（白名单内）/ 排除(运行时)（缓存、二进制、库文件、锁——不该进仓）/ 未分类。
+    未分类 = 既不在白名单、也不在已知运行时清单 → **可能的数据漏备**，需人工定性。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    try:
+        import sync as _sync
+        hl_files = set(_sync.HOME_FILES)
+        hl_dirs = set(_sync.HOME_DIRS)
+        pf = set(_sync.PROFILE_FILES)
+        pd = set(_sync.PROFILE_DIRS)
+    except Exception as exc:                                   # 拿不到白名单就别装懂
+        return {"error": "无法读取 sync.py 白名单：%r" % (exc,)}
+
+    known_runtime = {
+        "cache", "logs", "installs", "tools", "hermes-agent", "gateway", "gateway-service",
+        "bin", "bootstrap-cache", "checkpoints", "backups", "composer-pastes", "attachments",
+        "audio_cache", "image_cache", "images", "desktop-plugins", "state.db", "state.db-wal",
+        "state.db-shm", "kanban.db-wal", "kanban.db-shm", "shared-state.db-wal", "shared-state.db-shm",
+        "gateway.pid", "gateway.lock", "gateway_state.json", "gateway-starts.log", "processes.json",
+        "install_id", "models_dev_cache.json", "models_dev_cache.etag", "provider_models_cache.json",
+        "spawn-ledger.json", "shell-hooks-allowlist.json", "hermes-setup.exe", "sessions",
+        # 运行时/缓存/空壳目录（不进仓是正确的）
+        "locks", "lsp", "pets", "plugins", "runtime", "sandboxes", "source-checks", "telemetry",
+        "plugin-update-checks", "state-snapshots", "tui-theme-boot.json", ".scratch_tip_shown",
+        ".skills_prompt_snapshot.json",
+    }
+    # profiles/ 由 collect_profiles() 单独落到 profiles-overlay/，不是漏备
+    known_collected = {"profiles": "采集(profiles-overlay)", "sessions": "采集(按会话文件)"}
+
+    def size_of(p: Path) -> str:
+        try:
+            if p.is_dir():
+                n = sum(1 for _ in p.rglob("*") if _.is_file())
+                b = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+                return "%d 件/%.1fMB" % (n, b / 1048576)
+            return "%.1fMB" % (p.stat().st_size / 1048576)
+        except OSError:
+            return "?"
+
+    rows, unclassified = [], []
+    for p in sorted(home.iterdir(), key=lambda x: x.name.lower()):
+        n = p.name
+        if p.is_dir() and n in hl_dirs:
+            cls = "采集"
+        elif p.is_file() and n in hl_files:
+            cls = "采集"
+        elif n in known_collected:
+            cls = known_collected[n]
+        elif n == "state.db":
+            cls = "排除(会话按导出承载)"
+        elif n == "secrets":
+            cls = "未分类(凭据)"
+        elif any(n.startswith(k) for k in ("state.db", ".hermes-update", "models_dev_cache")) or \
+                any(n.endswith(k) for k in (".lock", ".pid", "-wal", "-shm")):
+            cls = "排除(运行时)"
+        elif n in known_runtime:
+            cls = "排除(运行时)"
+        else:
+            cls = "未分类"
+        if cls.startswith("未分类"):
+            unclassified.append((n, size_of(p), cls))
+        if cls != "排除(运行时)":
+            rows.append((n, "目录" if p.is_dir() else "文件", size_of(p), cls))
+
+    mirror_top = sorted(x.name for x in (repo / "home-overlay").iterdir()) if (repo / "home-overlay").is_dir() else []
+
+    def collectible_files(p: Path) -> int:
+        """活库侧"真正会被采集"的文件数：排除锁/临时/缓存类，以及 __pycache__ / node_modules。"""
+        pats = tuple(_sync.EXCLUDE_PATTERNS)
+        skips = set(_sync.EXCLUDE_DIRNAMES)
+        n = 0
+        for f in p.rglob("*"):
+            if not f.is_file():
+                continue
+            if any(part in skips for part in f.parts):
+                continue
+            if any(f.match(pat) for pat in pats):
+                continue
+            n += 1
+        return n
+
+    # "白名单内但镜像缺失"只有在该目录确有可采集内容时才算硬伤（git 不跟踪空目录）
+    not_in_mirror = [r[0] for r in rows
+                     if r[3] == "采集" and r[0] not in mirror_top and r[0] != "sessions"
+                     and collectible_files(home / r[0]) > 0]
+    return {"rows": rows, "unclassified": unclassified, "not_in_mirror": not_in_mirror,
+            "mirror_top_count": len(mirror_top)}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True, help="镜像仓库根（含 sessions/）")
     ap.add_argument("--home", default=str(default_home()), help="活库所在 HERMES_HOME")
     ap.add_argument("--profile", action="append", default=[], help="只审这些档（默认全部）")
     ap.add_argument("--json", default="", help="把明细写到这个 JSON 文件")
+    ap.add_argument("--with-files", action="store_true",
+                    help="同时审计文件层：HERMES_HOME 顶层条目 vs 采集白名单（列出未分类/漏备项）")
     args = ap.parse_args()
 
     try:
@@ -198,6 +292,26 @@ def main() -> int:
               flush=True)
 
     report["totals"] = grand
+    if args.with_files:
+        fl = file_layer_report(home, repo)
+        report["file_layer"] = fl
+        print()
+        if "error" in fl:
+            print("== 文件层审计：跳过（%s）==" % fl["error"])
+        else:
+            print("== 文件层审计（HERMES_HOME 顶层 vs 采集白名单）==")
+            for name, kind, size, cls in fl["rows"]:
+                mark = "✔" if cls.startswith("采集") else "⚠"
+                print("  %s %-30s %-4s %-14s %s" % (mark, name, kind, size, cls))
+            if fl["unclassified"]:
+                print("  未分类 %d 项（既不在白名单、也不在已知运行时清单）：%s"
+                      % (len(fl["unclassified"]),
+                         "、".join("%s(%s,%s)" % (n, s, c) for n, s, c in fl["unclassified"][:10])))
+            if fl["not_in_mirror"]:
+                hard.append("文件层：白名单内但镜像缺失 %d 项（例 %s）"
+                            % (len(fl["not_in_mirror"]), fl["not_in_mirror"][:5]))
+                print("  ⚠ 白名单内但镜像缺失：%s" % fl["not_in_mirror"][:10])
+
     report["hard_findings"] = hard
     print()
     print("== 合计（%.0fs）==" % (time.time() - t0))

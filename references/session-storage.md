@@ -141,3 +141,20 @@ python scripts/audit-coverage.py --repo D:/hermes-backup --home %LOCALAPPDATA%/h
 - `state.db` 标为 `排除(会话按导出承载)`：它 1.9GB，内容由按会话导出的 `.jsonl` 承载，不整库入仓。
 
 首跑（2026-10-23 02:0x）：21 个采集项、**硬伤 0**、未分类 1＝`secrets/`（114 字节的凭据文件，是否纳入备份由 owner 定）。副产物：`lsp/`（10,071 文件 / 83MB）、`state-snapshots/`（565MB，10-12 重装前快照）、`profiles/`（17GB，已由 profiles-overlay 承载）都被正确识别为运行时/已覆盖，不再误报。
+
+### 负向对照（0.4.8）
+
+"审计一直 PASS"可能只是"审计不看东西"。`scripts/test-audit-coverage.py` 用合成夹具（假 HERMES_HOME + 假镜像）跑 8 个场景，全部断言退出码与关键输出：
+
+| 场景 | 期望 |
+|---|---|
+| 全等 | PASS |
+| 镜像缺一个会话 | FAIL 且点名该会话 |
+| 镜像多一个会话 | FAIL |
+| 镜像条数多于活库（超前） | FAIL |
+| 镜像条数少于活库（落后） | PASS（正常增量） |
+| 本轮开始后新建会话 | PASS（豁免，`缺 0(新建豁免 1)`） |
+| 孤立消息组（有消息无会话行） | PASS 且计数正确 |
+| 会话文件坏 JSON | FAIL |
+
+实测 **8/8 通过**。<br>运行：`python scripts/test-audit-coverage.py`（夹具落在 `TMPDIR` 下，跑完自清）。

@@ -10,6 +10,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -115,8 +116,8 @@ def main() -> int:
                 return 0  # 刚同步过，静默跳过
     except Exception:
         pass
+    started = time.time()
     try:
-        started = time.time()
         p = run_sync()
     except subprocess.TimeoutExpired:
         bump_unfinished(started, "timeout %ss" % SYNC_TIMEOUT)

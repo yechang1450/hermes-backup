@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3.7  (2026-10-21)
+"""hermes-cloud-backup · sync v3.8  (2026-10-22)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -34,7 +34,9 @@
 
 安全闸（fail-closed）：
   · 采集完成后若发现单文件 >95MB 或镜像总量 >4GB -> 中止，不 commit 不 push
-  · 永不 force-push；push 被拒时 pull --no-rebase 后重试一次；出现合并冲突则中止并记录
+  · 永不 force-push；push 失败时先 pull --no-rebase 对齐线上，再按 20s/60s 退避重试（最多 3 次；
+    真实失败模式=GitHub 对 >6–8 分钟的 SSH 传输直接掐断 / fake-ip 偶发 RST，均属瞬态）；
+    出现合并冲突则中止并记录，本地提交保留、下一轮自然补推
   · 单实例防撞锁：并发触发时后来者自动让路（锁=HERMES_HOME/state/hermes-backup-sync.lock）——
     锁内记录持有者 pid：持有进程已消失（触发端被掐/崩溃）立即接管，3h 陈旧窗仅为兜底
   · git 索引锁自愈：崩溃遗留的 .git/index.lock（>120s）自动清除并重试一次
@@ -781,16 +783,26 @@ def commit_and_push(message: str, no_push: bool) -> dict:
         result["pushed"] = None
         return result
     t1 = time.time()
-    p = git("push", "-u", "origin", "main", check=False, timeout=600)  # push 阶段预算 10 分钟
-    if p.returncode != 0:
-        log("push 被拒（可能线上有新提交）→ pull --no-rebase 后重试")
+    # 推送：最多 3 次（真实失败模式是 GitHub 侧「传输超 ~6–8 分钟即掐断」与 fake-ip 偶发 RST，
+    # 两者都是瞬态、重试可过）。每次失败先 pull --no-rebase 对齐线上（非破坏，冲突即中止），
+    # 再按 20s / 60s 退避重试；本地提交始终保留，下一轮自然补推。
+    attempts = 3
+    last_err = ""
+    for attempt in range(1, attempts + 1):
+        p = git("push", "-u", "origin", "main", check=False, timeout=900)
+        if p.returncode == 0:
+            break
+        last_err = (p.stderr or p.stdout).strip()
+        log(f"push 失败（第 {attempt}/{attempts} 次）：{last_err[:200]}")
+        if attempt == attempts:
+            raise RuntimeError(f"push 失败（{attempts} 次均失败）：{last_err[:400]}")
         pull = git("pull", "--no-rebase", "origin", "main", check=False, timeout=600)
         if pull.returncode != 0:
             git("merge", "--abort", check=False)
             raise RuntimeError(f"pull/merge 失败：{(pull.stderr or pull.stdout).strip()[:400]}")
-        p = git("push", "-u", "origin", "main", check=False, timeout=600)
-    if p.returncode != 0:
-        raise RuntimeError(f"push 失败：{(p.stderr or p.stdout).strip()[:400]}")
+        wait = 20 if attempt == 1 else 60
+        log(f"退避 {wait}s 后重试推送")
+        time.sleep(wait)
     log(f"git 推送完成：{time.time() - t1:.0f}s")
     result["pushed"] = True
     return result

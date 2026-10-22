@@ -91,4 +91,20 @@
 
 **实测（2026-10-22）**：
 - 等价性（会话 `20261018_212441_6ddd5f`，2,780 条 / 2,593 归档 / 2,003 compacted）：控制组 28.5s vs 新路径 4.4s+0.7s＝**约 5.6 倍**；2,780 行基础字段 0 差异，**可见行 2,190 行 display_order/display_identity 0 差异**，不可见行 590 行也 0 差异；缺索引探针两库均为空；触发器 4→4 且 DDL 逐字一致；
-- 全量演练（第 2 代仓、1,351 会话）：见 `temp/hb-drill4-20261022/RECEIPT.md`。
+- 全量演练（第 2 代仓、1,491 会话）：见 `temp/hb-drill4-20261022/RECEIPT.md`（53m24s，差异 0 项）。
+
+### FTS 也一并摘除（0.4.1）
+
+巨会话导入 39 分钟里，display 重建只占 123 秒——**大头的剩余成本在 FTS**：`messages_fts_*` 与 `messages_fts_trigram_*` 六个触发器逐行 tokenize 正文，导入路径的剪枝删除还要逐行从索引里摘除。做法同 display：
+
+1. 导入前把六个 FTS 触发器一起摘掉（连同 display 共 **10 个**）；
+2. 导入后用官方 FTS5 命令一次性重建：`INSERT INTO messages_fts(messages_fts) VALUES('rebuild')`、`INSERT INTO messages_fts_trigram(messages_fts_trigram) VALUES('rebuild')`（外部内容表，从 `messages` 全量重排索引）；
+3. 最后用捕获的原文 DDL 恢复 10 个触发器。
+
+**A/B 实测（巨会话 `20260927_212311_3a35f0`，72,625 条消息，2026-10-22）**：
+| 口径 | 导入总耗时 | FTS 查询 `compaction` |
+|---|---|---|
+| A：display + FTS 全摘，导入后 rebuild | **55.8s** | 主索引 1,080 条 / trigram 40 条 |
+| B：只摘 display（0.4.0 行为） | 143.2s | 1,080 / 40（与 A 完全一致） |
+
+⇒ **2.57 倍**，且检索结果逐项一致、行数一致（72,625）。代价是重建后索引由 FTS5 统一生成（与触发器逐行维护的最终状态等价，官方 `'rebuild'` 命令语义）。

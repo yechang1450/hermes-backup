@@ -24,15 +24,24 @@ import sys
 import time
 from pathlib import Path
 
-# 只维护 display_order/display_identity 的四个触发器。导入期摘掉它们可消除官方导入路径的
-# O(n²) 开销（归档批 UPDATE 逐行触发「重写同会话同展示组全部可见兄弟行」）；导入完成后
-# 用官方 SessionDB._ensure_display_order 逐会话重算，再原样重建这四个触发器。
-DISPLAY_TRIGGERS = (
+# 导入期摘除的两类"索引维护"触发器：
+#  1) display 投影（display_order/display_identity）——归档批 UPDATE 逐行触发「重写同组全部可见兄弟行」＝O(n²)；
+#  2) FTS 索引（含 trigram）——逐行 tokenize 巨量正文，且导入路径的剪枝删除还要逐行从索引里摘除。
+# 导入完成后：display 用官方 SessionDB._ensure_display_order 重算；FTS 用官方 FTS5 'rebuild' 一次性重建；
+# 两类触发器最后都用捕获的原文 DDL 原样恢复。
+INDEX_TRIGGERS = (
     "messages_display_order_insert",
     "messages_display_visibility_update",
     "messages_display_identity_update",
     "messages_display_identity_delete",
+    "messages_fts_insert",
+    "messages_fts_delete",
+    "messages_fts_update",
+    "messages_fts_trigram_insert",
+    "messages_fts_trigram_delete",
+    "messages_fts_trigram_update",
 )
+FTS_TABLES = ("messages_fts", "messages_fts_trigram")
 
 
 def default_home() -> Path:
@@ -81,12 +90,12 @@ def load_session(files: list[Path]) -> dict:
 
 
 def _display_triggers_ddl(db_path: Path) -> list[tuple[str, str]]:
-    """读取目标库里四个 display 触发器的原文 DDL（逐字保留，重建时原样执行）。"""
+    """读取目标库里display/FTS 触发器的原文 DDL（逐字保留，重建时原样执行）。"""
     conn = sqlite3.connect(str(db_path), timeout=30)
     try:
         q = ("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name IN (%s)"
-             % ",".join("?" * len(DISPLAY_TRIGGERS)))
-        rows = conn.execute(q, DISPLAY_TRIGGERS).fetchall()
+             % ",".join("?" * len(INDEX_TRIGGERS)))
+        rows = conn.execute(q, INDEX_TRIGGERS).fetchall()
     finally:
         conn.close()
     return [(n, s) for n, s in rows if s]
@@ -104,6 +113,22 @@ def _drop_display_triggers(db_path: Path) -> list[tuple[str, str]]:
     finally:
         conn.close()
     return ddl
+
+
+def _rebuild_fts(db_path: Path) -> float:
+    """用官方 FTS5 'rebuild' 一次性重建外部内容索引（等价于触发器逐行维护的最终状态）。"""
+    t0 = time.time()
+    conn = sqlite3.connect(str(db_path), timeout=600)
+    try:
+        for table in FTS_TABLES:
+            try:
+                conn.execute(f"INSERT INTO {table}({table}) VALUES('rebuild')")
+                conn.commit()
+            except sqlite3.OperationalError as exc:
+                print(f"   !! FTS 重建跳过 {table}: {exc}")
+    finally:
+        conn.close()
+    return time.time() - t0
 
 
 def _restore_display_triggers(db_path: Path, ddl: list[tuple[str, str]]) -> None:
@@ -157,7 +182,7 @@ def main() -> int:
     ap.add_argument("--strict-caps", action="store_true",
                     help="不放宽官方导入尺寸上限（默认放宽；恢复完整历史所需）")
     ap.add_argument("--fast-import", action="store_true",
-                    help="导入提速：导入期摘除 display 触发器，导入后官方重算并按原 DDL 重建（大型历史约 3–4 倍速）")
+                    help="导入提速：导入期摘除 display 与 FTS 索引触发器，导入后官方重算/重建（大型历史约 2–4 倍速）")
     args = ap.parse_args()
 
     try:
@@ -243,9 +268,10 @@ def main() -> int:
                 except Exception:
                     pass
                 filled = _fill_invisible_orders(db_path)
+                fts_s = _rebuild_fts(db_path)
                 _restore_display_triggers(db_path, suppressed)
-                print(f"[{prof}] display 重建：{healed} 会话重算 / 不可见行补序 {filled} 行 / "
-                      f"触发器恢复 {len(suppressed)} 个 / 用时 {time.time() - t0:.1f}s")
+                print(f"[{prof}] 索引重建：display {healed} 会话 / 不可见行补序 {filled} 行 / "
+                      f"FTS {fts_s:.1f}s / 触发器恢复 {len(suppressed)} 个 / 总用时 {time.time() - t0:.1f}s")
         finally:
             try:
                 db.close()

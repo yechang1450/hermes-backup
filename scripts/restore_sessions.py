@@ -19,8 +19,20 @@ import argparse
 import gzip
 import json
 import os
+import sqlite3
 import sys
+import time
 from pathlib import Path
+
+# 只维护 display_order/display_identity 的四个触发器。导入期摘掉它们可消除官方导入路径的
+# O(n²) 开销（归档批 UPDATE 逐行触发「重写同会话同展示组全部可见兄弟行」）；导入完成后
+# 用官方 SessionDB._ensure_display_order 逐会话重算，再原样重建这四个触发器。
+DISPLAY_TRIGGERS = (
+    "messages_display_order_insert",
+    "messages_display_visibility_update",
+    "messages_display_identity_update",
+    "messages_display_identity_delete",
+)
 
 
 def default_home() -> Path:
@@ -68,6 +80,73 @@ def load_session(files: list[Path]) -> dict:
     return json.loads(data)
 
 
+def _display_triggers_ddl(db_path: Path) -> list[tuple[str, str]]:
+    """读取目标库里四个 display 触发器的原文 DDL（逐字保留，重建时原样执行）。"""
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    try:
+        q = ("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND name IN (%s)"
+             % ",".join("?" * len(DISPLAY_TRIGGERS)))
+        rows = conn.execute(q, DISPLAY_TRIGGERS).fetchall()
+    finally:
+        conn.close()
+    return [(n, s) for n, s in rows if s]
+
+
+def _drop_display_triggers(db_path: Path) -> list[tuple[str, str]]:
+    ddl = _display_triggers_ddl(db_path)
+    if not ddl:
+        return []
+    conn = sqlite3.connect(str(db_path), timeout=30)
+    try:
+        for name, _ in ddl:
+            conn.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+        conn.commit()
+    finally:
+        conn.close()
+    return ddl
+
+
+def _restore_display_triggers(db_path: Path, ddl: list[tuple[str, str]]) -> None:
+    if not ddl:
+        return
+    conn = sqlite3.connect(str(db_path), timeout=60)
+    try:
+        for name, sql in ddl:
+            conn.execute(f'DROP TRIGGER IF EXISTS "{name}"')
+            conn.execute(sql)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _rebuild_display(db, sids: list[str]) -> int:
+    """官方 SessionDB._ensure_display_order：仅对缺索引的可见行分批（1000/批）重算并写回。
+
+    与触发器逐行维护的最终不变量一致（display_order=同展示组首个可见行 id、
+    display_identity=sha256(展示键)）；官方读路径本身也会自愈，故此处失败不影响正确性。
+    """
+    fn = getattr(db, "_ensure_display_order", None)
+    healed = 0
+    for sid in sids:
+        try:
+            if fn is not None and fn(sid):
+                healed += 1
+        except Exception as exc:
+            print(f"   !! display 重建跳过 {sid}: {exc}")
+    return healed
+
+
+def _fill_invisible_orders(db_path: Path) -> int:
+    """不可见行（active=0 且 compacted=0）官方原本由 INSERT 触发器补 order=自身 id；此处一次性补齐。"""
+    conn = sqlite3.connect(str(db_path), timeout=60)
+    try:
+        cur = conn.execute("UPDATE messages SET display_order = id WHERE display_order IS NULL")
+        conn.commit()
+        return int(cur.rowcount or 0)
+    finally:
+        conn.close()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--home", default=str(default_home()), help="目标 HERMES_HOME")
@@ -77,6 +156,8 @@ def main() -> int:
     ap.add_argument("--repo", default="", help="仓库根（默认=本脚本上一级）")
     ap.add_argument("--strict-caps", action="store_true",
                     help="不放宽官方导入尺寸上限（默认放宽；恢复完整历史所需）")
+    ap.add_argument("--fast-import", action="store_true",
+                    help="导入提速：导入期摘除 display 触发器，导入后官方重算并按原 DDL 重建（大型历史约 3–4 倍速）")
     args = ap.parse_args()
 
     try:
@@ -122,7 +203,13 @@ def main() -> int:
                        key=lambda kv: sum(p.stat().st_size for p in kv[1]))  # 小档优先：进度可见、大档最后
         print(f"[{prof}] 目标库: {db_path} | 会话: {len(files)} 个")
         db = SessionDB(db_path)
+        suppressed: list[tuple[str, str]] = []
+        touched: list[str] = []
         try:
+            if args.fast_import:
+                suppressed = _drop_display_triggers(db_path)
+                print(f"[{prof}] fast-import：摘除 {len(suppressed)} 个 display 触发器"
+                      if suppressed else f"[{prof}] fast-import：目标库无 display 触发器，跳过抑制")
             for key, parts in files:
                 try:
                     sess = load_session(parts)
@@ -138,6 +225,7 @@ def main() -> int:
                     print(f"   !! {sid} 导入异常: {exc}")
                     continue
                 if res.get("ok"):
+                    touched.append(sid)
                     if res.get("imported"):
                         total["imported"] += 1
                         print(f"   + {sid}  已导入")
@@ -147,6 +235,17 @@ def main() -> int:
                 else:
                     total["failed"] += 1
                     print(f"   !! {sid} 被拒: {res.get('errors')}")
+            if args.fast_import:
+                t0 = time.time()
+                healed = _rebuild_display(db, touched)
+                try:
+                    db.close()
+                except Exception:
+                    pass
+                filled = _fill_invisible_orders(db_path)
+                _restore_display_triggers(db_path, suppressed)
+                print(f"[{prof}] display 重建：{healed} 会话重算 / 不可见行补序 {filled} 行 / "
+                      f"触发器恢复 {len(suppressed)} 个 / 用时 {time.time() - t0:.1f}s")
         finally:
             try:
                 db.close()

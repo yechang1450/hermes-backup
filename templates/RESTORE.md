@@ -38,7 +38,7 @@ python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup
 ## 3. 恢复会话层（全部历史对话）
 
 ```
-python D:\hermes-backup\tools\run_in_runtime.py D:\hermes-backup\tools\restore_sessions.py --all
+python D:\hermes-backup\tools\run_in_runtime.py D:\hermes-backup\tools\restore_sessions.py --all --fast-import
 ```
 - 走官方 `SessionDB.import_sessions` 管线（与桌面端「导入」按钮同一代码路径）；进程内放宽官方导入尺寸上限以恢复超大档。
 - 已存在的会话自动跳过（幂等）；逐个会话打印 `+ 已导入 / = 已存在`。

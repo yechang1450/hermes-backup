@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.3.9
+version: 0.4.0
 author: yechang1450, Hermes Agent
 license: MIT
 platforms: [windows]
@@ -41,7 +41,7 @@ metadata:
 | 首次初始化（建私有仓） | `python <SKILL>/scripts/sync.py --owner <gh-user> --create-remote` |
 | 日常同步 | `python <SKILL>/scripts/sync.py` |
 | 文件层恢复 | `python <REPO>/tools/restore_files.py --repo <REPO> --home <HERMES_HOME>` |
-| 会话层恢复 | `python <REPO>/tools/run_in_runtime.py <REPO>/tools/restore_sessions.py --all` |
+| 会话层恢复 | `python <REPO>/tools/run_in_runtime.py <REPO>/tools/restore_sessions.py --all`（加 `--fast-import`，大型历史约 5 倍速，见 references/session-storage.md） |
 | 拼包（给桌面端导入用） | `python <REPO>/tools/concat_sessions.py main` |
 | 路由回写（微信/QQ 续接） | `python <REPO>/tools/apply_routing.py` |
 | 桌面端收尾器 | `pwsh -NoProfile -File <REPO>/tools/finish_restore.ps1 -Repo <REPO>` |

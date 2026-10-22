@@ -72,3 +72,23 @@
 - **GitHub 侧体积** `gh api repos/<owner>/<repo> --jq .size`（KB）：2026-10-21 实测 **4,169,638 ≈ 3.98GB**，官方口径理想 <1GB、**强烈建议 <5GB**；
 - 增速（活动高峰实测）：树 +22MB/小时 ≈ 530MB/天，压缩后约 +150–200MB/天；
 - **换代阈值**：远端体积 ≥4.5GB（或克隆 >20 分钟 / 收到 GitHub 提醒）→ 按 `references/generations.md` 换代归档（新建一代仓、旧仓冻结为只读档案，不重写历史、不停同步）。
+
+## 恢复提速 `--fast-import`（0.4.0，2026-10-22）
+
+**问题**：官方导入路径 `_import_session_row` 对会话里的归档消息**逐行** `UPDATE messages SET active=0, compacted=? WHERE id=?`；该 UPDATE 每命中一行就触发 `messages_display_visibility_update`，其第三条语句要**重写同会话、同 `display_identity` 的全部可见兄弟行**。可见行的每一次「可见→隐藏」翻转都扫一遍全组 ⇒ **O(n²)**。实测（2026-10-21 第三轮演练）：单会话 72,571 条消息占掉 73 分钟导入里的 **约 50 分钟**。
+
+**做法**（全走官方件，不改官方文件）：
+1. 导入前从目标库 `sqlite_master` 读取四个 display 触发器（`messages_display_order_insert` / `messages_display_visibility_update` / `messages_display_identity_update` / `messages_display_identity_delete`）的**原文 DDL** 并 DROP；
+2. 正常跑官方 `import_sessions()`；
+3. 对每个已导入会话调用官方 `SessionDB._ensure_display_order(sid)`（内部 `_reconcile_display_orders`：1000 条/批，按 `_display_dedupe_key` 重算 `display_identity=sha256(key)`、`display_order=同组首个可见行 id`，仅漂移才写）；
+4. 一次性 `UPDATE messages SET display_order = id WHERE display_order IS NULL`（补齐不可见行，官方原由 INSERT 触发器补的等价值）；
+5. 用第 1 步捕获的 DDL 原样重建四个触发器。
+
+**为什么安全**：
+- 官方读路径本身会自愈——`_ensure_display_order` 在 `include_compacted and not include_inactive` 的读取分支里被调用（`hermes_state_messages.py:1418`），即使第 3 步没做，下次读也会补；
+- 只动显示投影列（`display_order`/`display_identity`），**不碰** `active`/`compacted`/内容/时间戳；FTS 与 `message_uid` 触发器全程保留；
+- 失败兜底是"重建自己的 DDL"：即使中途异常，`finally` 仍会尝试恢复触发器，且显示列最坏是"下次读取时自愈"。
+
+**实测（2026-10-22）**：
+- 等价性（会话 `20261018_212441_6ddd5f`，2,780 条 / 2,593 归档 / 2,003 compacted）：控制组 28.5s vs 新路径 4.4s+0.7s＝**约 5.6 倍**；2,780 行基础字段 0 差异，**可见行 2,190 行 display_order/display_identity 0 差异**，不可见行 590 行也 0 差异；缺索引探针两库均为空；触发器 4→4 且 DDL 逐字一致；
+- 全量演练（第 2 代仓、1,351 会话）：见 `temp/hb-drill4-20261022/RECEIPT.md`。

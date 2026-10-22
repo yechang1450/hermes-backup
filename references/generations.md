@@ -14,7 +14,7 @@
 2. 全新克隆耗时 > 20 分钟（同一网络条件下）；
 3. GitHub Support 发来体积提醒邮件。
 
-## 执行步骤（约 1–2 小时，可分两次做）
+## 手工步骤（等价，供核对/兜底；约 1–2 小时，可分两次做）
 ```bash
 # 0) 前置：镜像干净、本地=远端、无同步在跑（锁不存在）
 git -C D:/hermes-backup status --porcelain          # 应为空
@@ -37,6 +37,23 @@ gh api -X PATCH repos/<owner>/hermes-backup -f archived=true
 # 8) 文档：RESTORE.md 注明「本仓为第 N 代；最新代：<name>」
 ```
 回退：任一步失败 → `remote set-url origin` 指回旧仓、默认名改回，旧仓未归档前零影响。
+
+## 一条命令（0.4.6 起，推荐）
+
+```bash
+# 先看计划（只读，不动任何东西）
+bash scripts/rotate-generation.sh --from <当前代仓名> --to <新代仓名> --dry-run
+# 真跑（幂等、可续跑；全程持 sync 锁，sync 会主动让路）
+bash scripts/rotate-generation.sh --from <当前代仓名> --to <新代仓名>
+# 可选：--mirror D:/hermes-backup  --owner <gh-user>  --skip-archive
+```
+
+脚本做的事＝下面手工步骤 1–8 的自动化版本，额外保证：
+- 前置检查（工作树只允许 `meta/`、`logs/` 的轮后改动；无同步锁；local==remote）；
+- **孤儿快照单提交**（新仓历史清零，体积=当前树，避开单次 push 2GB 限制）；
+- 浅克隆抽查（文件数必须与 `git ls-files` 一致、抽一个完整会话能解析）；
+- 切换后**写 `local.json` 的 `repo` 字段**（0.4.6 起 sync.py 的默认仓名来自这里，不再写死在代码里）；
+- 幂等：若远端已有同一快照提交，跳过推送直接继续（失败后重跑即续接）。
 
 ## 恢复侧口径（多代并存）
 - **恢复一律用最新一代仓**（RESTORE.md 在每一代仓内都随附）；

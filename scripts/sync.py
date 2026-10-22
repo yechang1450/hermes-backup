@@ -122,7 +122,7 @@ def _parse_slug(url: str) -> str:
 def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: str) -> None:
     """解析并写入全局 GH_OWNER / GH_REPO / REMOTE_URL / GIT_NAME / GIT_EMAIL。"""
     global GH_OWNER, GH_REPO, REMOTE_URL, GIT_NAME, GIT_EMAIL
-    owner, repo, url = "", (repo_name or "hermes-backup"), ""
+    owner, repo, url = "", (repo_name or _skill_config().get("repo") or "hermes-backup"), ""
     if (mirror / ".git").exists():
         p = subprocess.run(["git", "-C", str(mirror), "remote", "get-url", "origin"],
                            capture_output=True, text=True)
@@ -846,7 +846,9 @@ def main() -> int:
     ap.add_argument("--message", default="")
     ap.add_argument("--mirror", default="", help="镜像工作区目录（默认自动探测）")
     ap.add_argument("--owner", default="", help="GitHub 属主（默认从镜像 remote 或 gh 登录解析）")
-    ap.add_argument("--repo-name", default="hermes-backup-2026q4", help="仓库名（默认 hermes-backup-2026q4＝第 2 代仓；第 1 代 hermes-backup 已归档）")
+    ap.add_argument("--repo-name", default="",
+                    help="仓库名（默认取技能目录 local.json 的 repo；都没有则 hermes-backup。"
+                         "镜像已有 origin 时一律以 origin 为准——换代只需改 origin/local.json）")
     ap.add_argument("--remote", default="", help="显式指定 remote URL")
     ap.add_argument("--create-remote", action="store_true",
                     help="远端不存在时用 gh 创建私有仓")

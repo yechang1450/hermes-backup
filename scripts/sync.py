@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3.8  (2026-10-22)
+"""hermes-cloud-backup · sync v3.9  (2026-10-23)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -28,6 +28,9 @@
     （实测 git 提交段 8–10 分钟；干净树上同一操作仅 6 秒）。
   · 备份范围（v3.6）：kanban 只备数据库（boards/*/kanban.db）；任务运行工作区/证据/日志
     属过程记录不入云（实测占该目录 96%：758MB/4.3 万文件 → 30MB/84 库）。
+  · 观测（v3.9）：每轮一行 runs.jsonl；**健康计数由本脚本在每个出口写**（单一来源，
+    哨兵/周期/手工同链路）；连续 ≥3 轮失败写 needs-attention，成功即清零并删标记；
+    子进程没跑完时由包装补记（last_exit_code="unfinished"，按 updated_at 判重）。
   · 数据仓换代（v3.7，2026-10-21）：第 1 代 `hermes-backup` 达 4.28GB 后冻结归档；
     当前默认指向第 2 代 `hermes-backup-2026q4`（孤儿快照单提交种子，详见
     references/generations.md）。换代=不停同步、不重写历史、可回退。
@@ -944,6 +947,50 @@ def main() -> int:
 
 
 RUNS_LOG = HERMES_HOME / "state" / "hb-sync-runs.jsonl"
+HEALTH_FILE = HERMES_HOME / "state" / "hb-sync-health.json"
+ATTENTION_MARKER = HERMES_HOME / "state" / "hb-sync-needs-attention"
+
+
+def _record_health(exit_code: int, line: dict) -> None:
+    """连续性记账的**单一来源**：任何入口（cron 包装 / 哨兵 ①②④ / 手工）跑完都会更新。
+
+    失败 = exit_code != 0。连续 >=3 轮失败写"待查看"标记（不推送、不打扰）；
+    一旦出现成功轮即清零并删掉标记——标记描述的是"当前是否仍处于连续失败状态"，
+    条件消失就不该继续留着（否则旧标记会伪装成新故障）。
+    """
+    try:
+        data = json.loads(HEALTH_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            data = {}
+    except Exception:
+        data = {}
+    n = 0 if exit_code == 0 else int(data.get("consecutive_failures") or 0) + 1
+    data.update({
+        "consecutive_failures": n,
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "last_exit_code": exit_code,
+        "last_start_ts": line.get("start_ts"),
+        "last_end_ts": line.get("end_ts"),
+        "last_duration_s": line.get("duration_s"),
+    })
+    try:
+        HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = HEALTH_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, HEALTH_FILE)
+    except OSError as e:
+        log(f"!! 写健康计数失败：{e!r}")
+        return
+    try:
+        if n >= 3:
+            ATTENTION_MARKER.write_text(
+                "连续 %d 轮同步失败（最后一轮 exit=%s @ %s，用时 %ss）；明细：%s\n"
+                % (n, exit_code, line.get("end_ts"), line.get("duration_s"), RUNS_LOG),
+                encoding="utf-8")
+        elif ATTENTION_MARKER.exists():
+            ATTENTION_MARKER.unlink()
+    except OSError:
+        pass
 
 
 def append_run(report: dict, t0: float, exit_code: int) -> None:
@@ -966,6 +1013,7 @@ def append_run(report: dict, t0: float, exit_code: int) -> None:
             "git_error": (report.get("git_error") or "")[:200],
             "via": ("bulk" if any(e.get("via") == "bulk" for e in exports.values()) else "cli"),
         }
+        _record_health(exit_code, line)
         with open(RUNS_LOG, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, ensure_ascii=False) + "\n")
     except Exception as e:

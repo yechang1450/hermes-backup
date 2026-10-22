@@ -70,4 +70,13 @@ hermes cron run <任务id>      # 各触发一轮核验（同步单轮 4–6 分
 - **子进程输出流式落盘**：`$HERMES_HOME/state/hb-sync-child.log`（哨兵与周期脚本都流式写盘；超时被掐也留有阶段证据，替代原先 `capture_output` 把输出吞掉的做法）。
 - **分阶段预算**：导出 ≤2000s、push ≤600s（逐档 CLI 回退每档 ≤900s）；外层 3300s 仍作兜底看门狗。
 - **降优先级**：两个包装脚本以 `BELOW_NORMAL_PRIORITY_CLASS` 拉起 `sync.py`，不与前台抢 CPU/IO。
-- **连续失败计数**：`state/hb-sync-health.json`；连续 ≥3 轮失败写 `state/hb-sync-needs-attention` 标记文件（**不主动推送**；成功一轮自动清除标记）。
+- **连续失败记账（0.4.3 起单一来源）**：`state/hb-sync-health.json` 由 **sync.py 自己在每个出口写**——cron 包装、哨兵 ①②④、手工运行都走同一条链路，字段含 `consecutive_failures / last_exit_code / last_start_ts / last_end_ts / last_duration_s`；连续 ≥3 轮失败写 `state/hb-sync-needs-attention`（**不主动推送**），一旦出现成功轮即清零并**自动删标记**（标记描述的是"当前是否仍连续失败"，条件消失就该消失）。子进程**没跑完**（超时/被杀/起不来）时由包装补记一次，`last_exit_code="unfinished"`，并按"健康文件 `updated_at` 是否晚于子进程启动"判重，绝不重复计数。
+
+### 分支回归测试（0.4.3，可复跑）
+
+```bash
+python scripts/test-hb-sentinel.py     # ①②④/新鲜度闸/锁跳过/失败上报 → 8 个场景
+python scripts/test-hb-health.py       # 健康记账单一来源 + 未跑完补偿去重
+```
+两个脚本都用假 `HERMES_HOME` + 桩 `sync.py`，纯标准库、只写临时目录、不跑真同步；末行 `== 总判定：PASS ==` 且退出码 0 即通过（`HB_TEST_BASE=<目录>` 可指定工作目录）。
+实测记录（2026-10-23）：sentinel 8/8 通过、health 9/9 通过。**④"长静默≥1h 结束恢复"从此有确定性回归**，不再依赖"等自然发生"。

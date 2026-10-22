@@ -158,6 +158,44 @@ def last_sync_age() -> float | None:
 
 
 CHILD_LOG = HOME / "state" / "hb-sync-child.log"
+HEALTH = HOME / "state" / "hb-sync-health.json"
+MARKER = HOME / "state" / "hb-sync-needs-attention"
+
+
+def bump_unfinished(start_ts: float, reason: str) -> int:
+    """**只在 sync.py 没机会记账时**补记一次失败（超时/被杀/起不来）。
+
+    正常跑完的轮次由 sync.py 自己写（单一来源）。用「健康文件 updated_at 是否晚于
+    本子进程启动时刻」判重，避免重复计数。
+    """
+    try:
+        h = json.loads(HEALTH.read_text(encoding="utf-8"))
+        if not isinstance(h, dict):
+            h = {}
+    except Exception:
+        h = {}
+    try:
+        updated = datetime.fromisoformat(str(h.get("updated_at") or "")).timestamp()
+    except Exception:
+        updated = 0.0
+    if updated >= start_ts:
+        return int(h.get("consecutive_failures") or 0)
+    n = int(h.get("consecutive_failures") or 0) + 1
+    h.update({"consecutive_failures": n,
+              "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+              "last_exit_code": "unfinished", "last_error": reason[:200]})
+    try:
+        HEALTH.parent.mkdir(parents=True, exist_ok=True)
+        HEALTH.write_text(json.dumps(h, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        if n >= 3:
+            MARKER.write_text("连续 %d 轮同步失败（最后一轮未跑完：%s）；日志：%s\n"
+                              % (n, reason[:120], CHILD_LOG), encoding="utf-8")
+    except OSError:
+        pass
+    return n
 
 
 def child_log_tail(n: int = 4000) -> str:
@@ -176,6 +214,7 @@ def run_sync(tag: str) -> bool:
     except OSError:
         pass
     try:
+        started = time.time()
         with open(CHILD_LOG, "a", encoding="utf-8", errors="replace") as lf:
             lf.write("\n===== %s 开始（哨兵触发：%s）=====\n"
                      % (datetime.now().astimezone().isoformat(timespec="seconds"), tag))
@@ -184,9 +223,11 @@ def run_sync(tag: str) -> bool:
                                stderr=subprocess.STDOUT, timeout=SYNC_TIMEOUT, env=git_env(),
                                creationflags=getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
     except subprocess.TimeoutExpired:
+        bump_unfinished(started, "timeout %ss" % SYNC_TIMEOUT)
         note("!! 同步超时（%ss）——阶段日志尾：\n%s" % (SYNC_TIMEOUT, child_log_tail(1200)))
         return False
     except Exception as e:
+        bump_unfinished(started, repr(e))
         note("!! 同步异常：%r" % e)
         return False
     tail = child_log_tail()

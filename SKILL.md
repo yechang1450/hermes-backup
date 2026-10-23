@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.11
+version: 0.4.12
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -109,6 +109,7 @@ metadata:
 - **跑会 import `hermes_state` 的脚本必须经 `tools/run_in_runtime.py`**：在本机终端里 `python <脚本>.py` 会被启动器以**另一个解释器**（缺 ruamel 等运行期依赖）经 runpy 重跑，报 `ModuleNotFoundError: No module named 'ruamel'`；就是 `python -c "import <模块>"` 也不能豁免（`SessionDB(...)` 构造会把进程切到工具树 python）。正确形态一律是 `python <REPO>/tools/run_in_runtime.py <脚本> [参数]`——恢复、对账、A/B 测试脚本皆同。同理：**恢复/对账不要与 `hermes update` 并发**，更新收尾持有 checkout 锁，卡住的子进程会 0% CPU 空转（判据：RSS 几 MB、CPU 0、日志停在启动横幅）。
 - **`sync.py` 的 home 只按 `LOCALAPPDATA` 解析（不读 `HERMES_HOME` 环境变量）**：`HERMES_HOME` 只影响两个包装脚本（哨兵/周期）与 hook 的路径。写单测时必须**注入 `sync.HERMES_HOME / HEALTH_FILE / ATTENTION_MARKER / RUNS_LOG`** 模块属性，否则会写进真实 `state/`（2026-10-23 实测踩过：把假失败记进了真健康文件）。
 - **推送卡在"零字节"时先看进程树，别只看网络**（0.4.9）：`subprocess` 超时只杀直接子进程，`git pack-objects` / `ssh` 这些孙子会留下来占住管道 → **之后每次重试都秒卡、零字节**（2026-10-23 实案：一轮推 10 分钟零字节、三次重试全卡，GitHub 侧只报 `Connection … closed by remote host`）。现在的 `sync.py`：①所有 git 网络操作注入 `GIT_SSH_COMMAND` 保活（ServerAliveInterval=20 / CountMax=30 / TCPKeepAlive）；②超时杀**整棵进程树**；③失败后回收本仓的**孤儿** git/ssh（只认命令行带本镜像路径或 `ssh.github.com … git-receive-pack`、且父进程已消失的）。判据三件套：`git push` 子进程存在 + `pack-objects` CPU 不涨 + ssh 读写 0 字节 ⇒ 管道死了，不是网速慢。
+- **官方 schema 会加触发器，fast-import 只摘"索引类"**（v0.22.5 实测）：库里现有 **13 个**触发器——除 display 4 个 + FTS 6 个（这 10 个由 fast-import 摘除、导入后重算/rebuild/原样恢复），还有 3 个**保持生效**：`messages_message_uid_insert`（插入时填 `message_uid`）、`messages_transcript_revision_update`（维护会话修订号）、`sessions_runtime_ledger_delete_guard`（删除护栏，与导入无关）。恢复结束会自检 `message_uid` 空值并打印 `uid 空值 0/N`；**空值 >0 ⇒ 官方改名/失效信号**，先核对官方 schema 再改 `INDEX_TRIGGERS`，别盲摘。v0.22.5 实测：21,693 条巨会话 `--fast-import` 恢复 + FTS 重建 **17.4s**、`message_uid` 全非空。
 - **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（新机上首次同步前设置一次即可）。
 - **GitHub 单文件 100MiB 硬限**：会话导出件按会话拆分；v0.3 起原样文本存储、**>45MB 的巨会话按 45MB 切片**（`<sid>.part-NNNN.jsonl`，0.4.10 由 90MB 下调——低于 GitHub「建议 50MB」，并为硬限留 2.2 倍余量；活跃巨会话每轮只有**末片**变化，不再整份重算大 blob）。字节等价由 `scripts/test-split.py` 回归（切片+按片号拼接 == 原始行，逐字节）。
 - **历史体积机制（关键）**：git 仓库＝最新快照＋**每个被改文件的每一版**——同步的「强制覆盖」语义只作用于最新树（≈镜像工作区），**挡不住历史堆积**（实测：全历史 blob 2.01GB vs 最新树 0.72GB；单会话 10 个版本＝313MB）。根因＝会话导出是**超长单行 JSON**、头部元数据每轮必变 × 整包 gzip → deflate 级联 → 版本间字节重叠 **0%** → git 增量全失效 → 每轮 ~226MB 完整入库（仓库 ~0.5GB/天）。**已治理（v0.3，0.3.0）＝原样文本格式：同数据对照实测 +79.40MB/轮 → +0.01MB（整件）/ +2.25MB（分片）级；机理与三方案对照见 `references/session-storage.md`。** 单文件 95MB 同步闸由分片格式顺带拆除（分片后最大件 45MB）；体积读数用**本地对象库**实测（GitHub `size` 字段有滞后）。

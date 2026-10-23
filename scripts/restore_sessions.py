@@ -115,6 +115,28 @@ def _drop_display_triggers(db_path: Path) -> list[tuple[str, str]]:
     return ddl
 
 
+def _check_uid_nulls(db_path: Path) -> tuple[int, int]:
+    """兜底自检：0.22.5 起官方新增 `messages_message_uid_insert` 触发器（导入期我们**不摘它**，
+    由官方在插入时填 uid）。这里统计 `message_uid` 空值行——空值 >0 说明该触发器改名/失效
+    （schema 变动信号），需要核对官方 schema 后再更新 INDEX_TRIGGERS。
+
+    返回 (总行数, 空值行数)；没有该列时返回 (-1, -1)。
+    """
+    try:
+        conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=30)
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+            if "message_uid" not in cols:
+                return -1, -1
+            total = conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            nulls = conn.execute("SELECT COUNT(*) FROM messages WHERE message_uid IS NULL").fetchone()[0]
+            return int(total), int(nulls)
+        finally:
+            conn.close()
+    except Exception:
+        return -1, -1
+
+
 def _rebuild_fts(db_path: Path) -> float:
     """用官方 FTS5 'rebuild' 一次性重建外部内容索引（等价于触发器逐行维护的最终状态）。"""
     t0 = time.time()
@@ -270,8 +292,14 @@ def main() -> int:
                 filled = _fill_invisible_orders(db_path)
                 fts_s = _rebuild_fts(db_path)
                 _restore_display_triggers(db_path, suppressed)
+                uid_total, uid_nulls = _check_uid_nulls(db_path)
+                uid_note = ("uid 空值 0/%d" % uid_total) if uid_total >= 0 and uid_nulls == 0 else (
+                    "uid 空值 %d/%d ⚠" % (uid_nulls, uid_total) if uid_total >= 0 else "uid 检查跳过")
                 print(f"[{prof}] 索引重建：display {healed} 会话 / 不可见行补序 {filled} 行 / "
-                      f"FTS {fts_s:.1f}s / 触发器恢复 {len(suppressed)} 个 / 总用时 {time.time() - t0:.1f}s")
+                      f"FTS {fts_s:.1f}s / 触发器恢复 {len(suppressed)} 个 / {uid_note} / 总用时 {time.time() - t0:.1f}s")
+                if uid_total >= 0 and uid_nulls > 0:
+                    print(f"   !! {prof}: {uid_nulls} 行 message_uid 为空——官方 messages_message_uid_insert "
+                          f"触发器可能改名/失效（schema 变动信号），请核对官方 schema 后更新 INDEX_TRIGGERS 自检")
         finally:
             try:
                 db.close()

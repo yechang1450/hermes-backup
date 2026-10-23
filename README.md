@@ -56,6 +56,10 @@ hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-cloud
 - 技能本体不含任何密钥；全部操作在本机执行；唯一网络行为是推送到你自己的仓库。
 - 技能目录下的 `local.json` 是机器本地配置，不进入任何仓库。
 
-## License
+## Copyright
 
-MIT
+Copyright © 2026 yechang1450. All rights reserved.
+
+No additional license or permission is granted beyond rights provided by
+GitHub's Terms of Service or applicable law. Third-party components remain
+subject to their own license notices.

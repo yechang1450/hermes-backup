@@ -73,10 +73,31 @@ hermes cron run <任务id>      # 各触发一轮核验（同步单轮 4–6 分
 - **连续失败记账（0.4.3 起单一来源）**：`state/hb-sync-health.json` 由 **sync.py 自己在每个出口写**——cron 包装、哨兵 ①②④、手工运行都走同一条链路，字段含 `consecutive_failures / last_exit_code / last_start_ts / last_end_ts / last_duration_s`；连续 ≥3 轮失败写 `state/hb-sync-needs-attention`（**不主动推送**），一旦出现成功轮即清零并**自动删标记**（标记描述的是"当前是否仍连续失败"，条件消失就该消失）。子进程**没跑完**（超时/被杀/起不来）时由包装补记一次，`last_exit_code="unfinished"`，并按"健康文件 `updated_at` 是否晚于子进程启动"判重，绝不重复计数。
 
 ### 分支回归测试（0.4.3，可复跑）
-
 ```bash
 python scripts/test-hb-sentinel.py     # ①②④/新鲜度闸/锁跳过/失败上报 → 8 个场景
 python scripts/test-hb-health.py       # 健康记账单一来源 + 未跑完补偿去重
 ```
 两个脚本都用假 `HERMES_HOME` + 桩 `sync.py`，纯标准库、只写临时目录、不跑真同步；末行 `== 总判定：PASS ==` 且退出码 0 即通过（`HB_TEST_BASE=<目录>` 可指定工作目录）。
 实测记录（2026-10-23）：sentinel 8/8 通过、health 9/9 通过。**④"长静默≥1h 结束恢复"从此有确定性回归**，不再依赖"等自然发生"。
+
+## 推送硬化（0.4.9，2026-10-23 实案）
+
+**现象**：11:18 那轮提交完成后（11:23:58），推送卡了 ~10 分钟**零字节**，GitHub 报
+`Connection to ssh.github.com closed by remote host`；sync 重试第 2 次又是零字节、4 分钟不动。
+
+**判据**（三条同时成立就是管道死了，不是网速慢）：
+1. `git push` 子进程在、`ssh` 在，但 **ssh 读写计数 0 字节/10s**；
+2. `git pack-objects` CPU 不再增长（压缩早就跑完，卡在写管道）；
+3. 独立 `git ls-remote` 4 秒通（网络与认证没问题）。
+
+**根因**：`subprocess` 的超时只杀**直接子进程**。上一轮的 `pack-objects` / `ssh` 孙子活下来继续
+占着管道，于是**每一次重试都在同一个死管道前秒卡**——看起来像"网络又断了"，其实是本地残留。
+
+**修法（sync.py 现已内置）**：
+- 所有 git 网络操作注入 `GIT_SSH_COMMAND="ssh -o ServerAliveInterval=20 -o ServerAliveCountMax=30 -o TCPKeepAlive=yes"`（长传输不再静默挂死）；
+- 超时用 `_kill_tree()` 杀**整棵进程树**（psutil children recursive）；
+- 失败后用 `_reap_orphan_git()` 回收本仓**孤儿** git/ssh：只认命令行带本镜像路径、或带 `ssh.github.com … git-receive-pack`，且**父进程已消失**的进程——不碰别的 agent 的正常 git。
+
+**实测**：手动带保活重推同一提交 → 压缩后 112MiB、**3.32 MiB/s**、2 分钟推完（`20c8fd92..c99f15c0`）。
+超时路径单测：`sync.git(... timeout=0.05)` → 抛"超时（已杀进程树 2 个，回收孤儿 0 个）"，事后零残留。
+

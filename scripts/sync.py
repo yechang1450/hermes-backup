@@ -709,9 +709,107 @@ def size_audit() -> tuple[list[tuple[str, int]], int]:
 
 
 # ---------- git ----------
+def _git_env() -> dict:
+    """git 网络操作的 env：给 SSH 加保活。
+
+    长传输被 GitHub 掐断时，没有保活的 ssh 会静默挂死（进程在、零字节、永不返回）。
+    """
+    env = os.environ.copy()
+    if not env.get("GIT_SSH_COMMAND"):
+        env["GIT_SSH_COMMAND"] = ("ssh -o ServerAliveInterval=20 -o ServerAliveCountMax=30 "
+                                  "-o TCPKeepAlive=yes")
+    return env
+
+
+def _kill_tree(proc: subprocess.Popen) -> int:
+    """杀掉进程树（含孙子）。
+
+    `subprocess` 的超时只杀直接子进程；push 的孙子（git pack-objects / ssh）会留下来占住
+    管道，于是**之后每次重试都零字节秒卡**（2026-10-23 实案：一轮推 10 分钟零字节）。
+    """
+    killed = 0
+    try:
+        import psutil
+    except Exception:
+        try:
+            proc.kill()
+            return 1
+        except Exception:
+            return 0
+    try:
+        parent = psutil.Process(proc.pid)
+        kids = parent.children(recursive=True)
+    except Exception:
+        kids = []
+    for p in kids:
+        try:
+            p.kill()
+            killed += 1
+        except Exception:
+            pass
+    if proc.poll() is None:
+        try:
+            proc.kill()
+            killed += 1
+        except Exception:
+            pass
+    return killed
+
+
+def _reap_orphan_git() -> list[int]:
+    """回收本仓的**孤儿** git/ssh 进程（父进程已消失的那些）。
+
+    只认命令行里带本镜像路径、或带 `ssh.github.com … git-receive-pack` 的进程，且只在
+    父进程不存在时动手——不会碰其它 agent 的正常 git 操作。
+    """
+    killed: list[int] = []
+    try:
+        import psutil
+    except Exception:
+        return killed
+    mirror_s = str(MIRROR)
+    for p in psutil.process_iter(["pid", "name", "cmdline", "ppid"]):
+        try:
+            name = (p.info["name"] or "").lower()
+            if name not in ("git.exe", "git", "ssh.exe", "ssh"):
+                continue
+            cl = " ".join(p.info["cmdline"] or [])
+            if not (mirror_s in cl or "hermes-backup" in cl
+                    or ("ssh.github.com" in cl and "git-receive-pack" in cl)):
+                continue
+            ppid = p.info["ppid"] or 0
+            try:
+                alive = psutil.Process(ppid).is_running() if ppid > 1 else False
+            except Exception:
+                alive = False
+            if alive:
+                continue
+            p.kill()
+            killed.append(p.info["pid"])
+        except Exception:
+            continue
+    return killed
+
+
 def git(*args: str, check: bool = True, timeout: float | None = None) -> subprocess.CompletedProcess:
-    p = subprocess.run(["git", "-C", str(MIRROR), *args],
-                       capture_output=True, text=True, timeout=timeout)
+    proc = subprocess.Popen(["git", "-C", str(MIRROR), *args], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, env=_git_env())
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        n = _kill_tree(proc)
+        try:
+            out, err = proc.communicate(timeout=30)
+        except Exception:
+            out, err = "", ""
+        orphans = _reap_orphan_git()
+        raise RuntimeError("git %s 超时（预算 %ss；已杀进程树 %d 个，回收孤儿 %d 个）：%s"
+                           % (" ".join(args), timeout, n, len(orphans), (err or out or "").strip()[:300]))
+    p = subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+    if p.returncode != 0:
+        orphans = _reap_orphan_git()          # 失败后清掉残留孙子，避免下一次重试秒卡
+        if orphans:
+            log("git %s 失败后回收孤儿进程 %d 个" % (" ".join(args[:2]), len(orphans)))
     if check and p.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} -> rc={p.returncode}: "
                            f"{(p.stderr or p.stdout).strip()[:500]}")

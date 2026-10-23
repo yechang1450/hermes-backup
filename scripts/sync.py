@@ -153,7 +153,8 @@ def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: s
 
 SIZE_GUARD_FILE = 95 * 1024 * 1024      # 单文件上限
 SIZE_GUARD_TOTAL = 4096 * 1024 * 1024   # 镜像总量上限（v3 会话不压缩，基数更大）
-PART_MAX = 90 * 1024 * 1024             # 会话分片阈值（为 100MB 单文件硬限留余量）
+PART_MAX = 45 * 1024 * 1024             # 会话分片阈值：低于 GitHub「建议 50MB」、为 100MB 硬限留 2.2 倍余量；
+                                        # 同时把"活跃巨会话每轮重算整个大 blob"的成本摊到末片
 
 LOCK_FILE = HERMES_HOME / "state" / "hermes-backup-sync.lock"
 LOCK_STALE_SECONDS = 3 * 3600           # 兜底：无法核实持有者时的陈旧锁窗口（正常由 pid 存活判定立即接管）

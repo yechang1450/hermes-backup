@@ -85,3 +85,22 @@ pwsh -NoProfile -Command "(Invoke-CimMethod -ClassName Win32_Process -MethodName
 
 ---
 *本手册随 hermes-cloud-backup 技能分发；修改时保持每步可核验、可回滚。*
+
+## 8. 从 git 历史取回"已被 prune 的会话"（活库后来把它删了）
+
+镜像只跟活库同步：活库删掉的会话，下一轮会从**最新树**里 prune（历史仍在）。
+如果某段对话是外部事件弄丢的（state.db 回滚/还原、手工清理），可以从历史里捞回来：
+
+```bash
+cd /d/hermes-backup                      # 或你的镜像路径
+SID=20261024_113906_c858a0               # 会话 id（备份文件名去掉 .jsonl / .part-NNNN）
+git log --oneline -3 -- sessions/main/$SID.jsonl        # 找一个仍有它的提交
+git show <sha>:sessions/main/$SID.jsonl > /tmp/$SID.jsonl   # 取回（分片则逐片取 part-0000…）
+python -c "import json;d=json.load(open('/tmp/$SID.jsonl'));print(len(d['messages']))"   # 自检条数
+```
+
+再把文件放进 `<src>/main/` 目录，用 `restore_sessions.py --source <src> --profile main --fast-import` 导回活库
+（导入是**追加**，不改现有会话；导入前先 `cp state.db state.db.bak-<时间>`）。
+
+实测（2026-10-24）：取回 `20261024_113906_c858a0` → 1,815,974 字节、'检查 hermes 自动压缩是否失效'、277 条消息，与镜像一致。
+

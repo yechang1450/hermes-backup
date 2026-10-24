@@ -517,9 +517,19 @@ def stabilize_line(raw: bytes) -> bytes:
         from session_layout import stabilize       # 同目录模块
     except Exception:
         return raw
+    # 内存守卫：解码+重排 243MB 的会话要 ~1.7GB 峰值；可用内存不够就本轮跳过（下轮再试），
+    # 不要赌 MemoryError——那会在导出阶段把内存压力传导给整台机器。
+    try:
+        import psutil as _ps
+        if _ps.virtual_memory().available < 2.4 * len(raw):
+            return raw
+    except Exception:
+        pass
     try:
         text = raw.decode("utf-8")
         out = stabilize(text)
+    except MemoryError:
+        return raw
     except Exception:
         return raw
     return raw if out == text else out.encode("utf-8")

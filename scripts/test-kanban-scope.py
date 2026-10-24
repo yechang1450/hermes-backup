@@ -65,10 +65,15 @@ def main() -> int:
     check("S1/S2/S3 只备 board 库 + 顶层库", got == want, f"got={got}")
     check("S4a 行数一致", all(count(dst / w) == count(src / w) for w in want))
     check("S4b 工作区 db 没被复制", not any("workspaces" in g for g in got), f"{len(got)} 个")
+
+    # S5 关键：复制完必须能扛住 prune_unvisited（未登记为"已访问"就会被当残留删掉）
+    removed = sync.prune_unvisited(dst)
+    survived = sorted(p.relative_to(dst).as_posix() for p in dst.rglob("*.db"))
+    check("S5 prune 后板库仍在", survived == want, f"删了 {removed} 个 / 剩 {survived}")
     print(f"  （复制 {n} 个库）")
 
     shutil.rmtree(base, ignore_errors=True)
-    print(f"\n== 4 项，失败 {fails} ==")
+    print(f"\n== 5 项，失败 {fails} ==")
     return 0 if fails == 0 else 2
 
 

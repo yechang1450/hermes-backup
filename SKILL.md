@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.29
+version: 0.4.30
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -116,6 +116,7 @@ metadata:
 - **推送预算 900s→1500s、外层 3300s→3900s**（0.4.23）：一次性大重排那轮（900MB 级）推送超 900s 被掐，属合法大包不是故障；外层同步放宽到 3900s（collect+export+commit 最坏 ~1900s）。日常轮次仍只有几十 MB，读数不会变。
 - **推送卡在"零字节"时先看进程树，别只看网络**（0.4.9）：`subprocess` 超时只杀直接子进程，`git pack-objects` / `ssh` 这些孙子会留下来占住管道 → **之后每次重试都秒卡、零字节**（2026-10-23 实案：一轮推 10 分钟零字节、三次重试全卡，GitHub 侧只报 `Connection … closed by remote host`）。现在的 `sync.py`：①所有 git 网络操作注入 `GIT_SSH_COMMAND` 保活（ServerAliveInterval=20 / CountMax=30 / TCPKeepAlive）；②超时杀**整棵进程树**；③失败后回收本仓的**孤儿** git/ssh（只认命令行带本镜像路径或 `ssh.github.com … git-receive-pack`、且父进程已消失的）。判据三件套：`git push` 子进程存在 + `pack-objects` CPU 不涨 + ssh 读写 0 字节 ⇒ 管道死了，不是网速慢。
 - **成功轮要清 `last_error`**（0.4.17）：健康文件是连续性记账的单一来源，失败时写 `last_error`、成功时必须置 `None`——否则「上一轮 timeout 3300s」会一直挂着，被后读的人（包括我）误判成当前仍在失败。`repaired_note` 属历史注记，保留不动。
+- **自定义拷贝路径必须登记 `_COPIED`，否则会被 prune 当残留删掉**（0.4.30，2026-10-25 实案）：`copy_kanban_dbs` 直接调 `snapshot_sqlite()`（绕过了 `copy_file` 的登记），结果 `prune_unvisited` 把 11 个板库当"本轮未访问"全删了——镜像是空的、且没有任何报错。凡是不走 `copy_file()` 的写镜像路径，都必须 `_COPIED.add(str(目标路径))`。回归＝`test-kanban-scope.py` 的 S5（copy 后跑 prune，断言文件仍在）。
 - **kanban 备份必须严守白名单**（0.4.29）：只备 `boards/<board>/kanban.db`（含 `boards/_archived/<board>/kanban.db`）与顶层 `kanban.db`。旧实现用 `rglob("*.db")`，把任务工作区/证据里的 73 个 `school80.db` 之类也备上了（镜像 84 个 db / 36MB），违背「工作区属过程记录」的政策、每轮还多快照 70+ 个无关库。回归＝`test-kanban-scope.py`（4 项）。**改动后下一轮会自动 prune 掉多备的工作区库。**
 - **SQLite 必须用在线备份 API 快照，不能直接拷**（0.4.28）：看板库是 `journal_mode=wal`，而 `-wal`/`-shm` 被排除在备份外 ⇒ 只拷 `.db` 会丢掉尚未 checkpoint 的已提交事务；实测极端情况下**连建表语句都可能不在 `.db` 里**（普通拷贝打开即 `no such table`）。现在 `copy_file()` 对所有 `.db` 走 `snapshot_sqlite()`（`sqlite3.Connection.backup()`）：读穿 WAL、产出自包含紧凑快照，失败自动回退普通拷贝。覆盖 `kanban/*.db`、`shared-state.db`、`projects.db` 以及各档 `projects.db`。回归＝`test-kanban-snapshot.py`（3 项）。
 - **哨兵有超期兜底**（0.4.27）：周期 cron 的 `next_run_at` 会被网关重启重排（实测把 05:57 挪到 06:29，空窗 2.5h）；哨兵现在除「网关重启 / 静默 5 分钟 / 长静默恢复」外，还有 **⑤ overdue**——镜像 `finished_at` 超过 2.5 小时、没在同步、也不满足 20 分钟新鲜闸，就补一轮。回归＝`test-hb-sentinel.py` S8/S9。

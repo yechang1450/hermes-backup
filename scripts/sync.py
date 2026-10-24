@@ -394,6 +394,9 @@ def copy_kanban_dbs(src: Path, dst: Path) -> int:
         targets.append(top)
     for db in targets:
         target = dst / db.relative_to(src)
+        # 关键：必须登记为"本轮已访问"，否则 prune_unvisited 会把它当残留删掉
+        # （2026-10-25 实案：直接调 snapshot_sqlite 绕过了 copy_file 的登记，镜像里 11 个板库被清空）
+        _COPIED.add(str(target))
         try:
             if target.is_file() and target.stat().st_size == db.stat().st_size and target.read_bytes() == db.read_bytes():
                 n += 1

@@ -367,22 +367,37 @@ def snapshot_sqlite(src: Path, dst: Path) -> bool:
 
 
 def copy_kanban_dbs(src: Path, dst: Path) -> int:
-    """看板只备份数据库（boards/*/kanban.db）；run 工作区/证据/日志属过程记录，不入云备份。
-    实测：kanban 目录 758MB/4.3 万文件中 96% 是任务运行工作区（含整份 git 克隆）。
+    """看板**只**备份每个板的 `boards/<board>/kanban.db`（+ 顶层 `kanban.db` 若有）。
 
-    逐个用 `snapshot_sqlite()` 取一致快照（见其 docstring：WAL 模式下直接拷会丢最近事务）。
+    实测（2026-10-25）：旧实现用 `rglob("*.db")`，把任务工作区/证据/备份目录里的 73 个
+    `school80.db` 之类也一起备了（镜像里 84 个 db / 36MB），既违背"工作区属过程记录、不入云"
+    的政策，又让每轮多快照 70+ 个无关库。这里按白名单取，工作区里的自然落到 prune。
     """
     n = 0
-    for db in sorted(src.rglob("*.db")):
-        if not db.is_file():
-            continue
+    targets: list[Path] = []
+    boards = src / "boards"
+    if boards.is_dir():
+        for board in sorted(boards.iterdir()):
+            if not board.is_dir():
+                continue
+            db = board / "kanban.db"
+            if db.is_file():
+                targets.append(db)
+            elif board.name == "_archived":
+                # 归档板是 boards/_archived/<board>/kanban.db —— 也是看板数据，照常备份
+                for sub in sorted(board.iterdir()):
+                    adb = sub / "kanban.db"
+                    if sub.is_dir() and adb.is_file():
+                        targets.append(adb)
+    top = src / "kanban.db"
+    if top.is_file():
+        targets.append(top)
+    for db in targets:
         target = dst / db.relative_to(src)
-        # 内容相同就跳过（保住 mtime，避免 git 整树重哈希）
         try:
-            if target.is_file() and target.stat().st_size == db.stat().st_size:
-                if target.read_bytes() == db.read_bytes():
-                    n += 1
-                    continue
+            if target.is_file() and target.stat().st_size == db.stat().st_size and target.read_bytes() == db.read_bytes():
+                n += 1
+                continue
         except OSError:
             pass
         if snapshot_sqlite(db, target):

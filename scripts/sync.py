@@ -1131,6 +1131,9 @@ def _record_health(exit_code: int, line: dict) -> None:
         "last_end_ts": line.get("end_ts"),
         "last_duration_s": line.get("duration_s"),
     })
+    # 成功轮必须清掉上一轮的 last_error：否则历史错误串会一直挂着，被读成"当前仍在失败"
+    if exit_code == 0:
+        data["last_error"] = None
     try:
         HEALTH_FILE.parent.mkdir(parents=True, exist_ok=True)
         tmp = HEALTH_FILE.with_suffix(".tmp")

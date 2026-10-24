@@ -123,3 +123,9 @@ python scripts/test-hb-health.py       # 健康记账单一来源 + 未跑完补
 
 **回归**：`scripts/test-reap-exporters.py` 三场景（孤儿被杀 / 父进程健在不动 / 只提文件名不杀）。
 
+### 修复后实测（2026-10-24 18:44–18:57）
+- 手动验证轮：**745.9s**（collect 11.7 / export 458.7 / git 270），`ceo` 32.8s、`main` 159s，`committed+pushed`；
+- 健康 2 → **0**；残留导出进程 **0**；本地=远端 `3982cddb`；
+- 两个"活库已不存在"的会话在该轮记为 `D`（prune 生效），历史仍可取回；
+- 随后审计 `--with-files`：**AUDIT-PASS，硬伤 0 项**（活库 2,204/397,407 ⇒ 镜像 2,203/396,907）。
+

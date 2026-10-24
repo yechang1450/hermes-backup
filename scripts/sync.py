@@ -83,9 +83,9 @@ REMOTE_URL = ""
 GIT_NAME = ""
 GIT_EMAIL = ""
 
-TOOL_FILES = ["sync.py", "concat_sessions.py", "apply_routing.py", "restore_sessions.py",
-              "restore_files.py", "run_in_runtime.py", "finish_restore.ps1",
-              "export_all_profiles.py"]
+TOOL_FILES = ["sync.py", "session_layout.py", "concat_sessions.py", "apply_routing.py",
+              "restore_sessions.py", "restore_files.py", "run_in_runtime.py",
+              "finish_restore.ps1", "export_all_profiles.py"]
 
 
 def _skill_config() -> dict:
@@ -152,6 +152,8 @@ def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: s
     GIT_EMAIL = f"{owner}@users.noreply.github.com" if owner else ""
 
 SIZE_GUARD_FILE = 95 * 1024 * 1024      # 单文件上限
+STABILIZE_MIN_BYTES = 5 * 1024 * 1024   # 只对「大会话」做尾部稳定化：小文件整份重写无所谓，
+                                        # 但大会话每轮整份重写会拖垮 git 增量（见 session_layout.py）
 SIZE_GUARD_TOTAL = 4096 * 1024 * 1024   # 镜像总量上限（v3 会话不压缩，基数更大）
 PART_MAX = 45 * 1024 * 1024             # 会话分片阈值：低于 GitHub「建议 50MB」、为 100MB 硬限留 2.2 倍余量；
                                         # 同时把"活跃巨会话每轮重算整个大 blob"的成本摊到末片
@@ -502,6 +504,27 @@ def ensure_private(report: dict) -> bool:
 SESSION_ID_RE = re.compile(rb'"id"\s*:\s*"([0-9A-Za-z_.-]{4,128})"')
 
 
+def stabilize_line(raw: bytes) -> bytes:
+    """把易变统计字段挪到行尾，使「追加消息」只改动文件尾部。
+
+    见 scripts/session_layout.py 的机理说明：会话是一行超长 JSON，头部只要有一个统计字段
+    （message_count / token 计数 / timings …）变化，整行字节全变 ⇒ 所有分片都成新 blob
+    （2026-10-24 实测单轮 827MB 重写）。稳定化之后，未变的会话字节完全一致、有追加的只改末尾。
+
+    解析失败（截断/非对象）一律原样返回，绝不丢数据。
+    """
+    try:
+        from session_layout import stabilize       # 同目录模块
+    except Exception:
+        return raw
+    try:
+        text = raw.decode("utf-8")
+        out = stabilize(text)
+    except Exception:
+        return raw
+    return raw if out == text else out.encode("utf-8")
+
+
 def split_to_session_parts(raw: Path, outdir: Path) -> dict:
     """把「一行=一个会话」的 jsonl 原样拆成每会话 .jsonl（>90MB 切 .part-NNNN.jsonl 分片）。
 
@@ -514,6 +537,8 @@ def split_to_session_parts(raw: Path, outdir: Path) -> dict:
     seen: dict[str, int] = {}
     with open(raw, "rb") as fin:
         for idx, ln in enumerate(fin):
+            if len(ln) > STABILIZE_MIN_BYTES:
+                ln = stabilize_line(ln)
             m = SESSION_ID_RE.search(ln[:16384])
             sid = m.group(1).decode("ascii", "replace") if m else f"line{idx:04d}"
             dup = seen.get(sid, 0)

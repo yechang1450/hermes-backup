@@ -205,6 +205,8 @@ def main() -> int:
                     help="不放宽官方导入尺寸上限（默认放宽；恢复完整历史所需）")
     ap.add_argument("--fast-import", action="store_true",
                     help="导入提速：导入期摘除 display 与 FTS 索引触发器，导入后官方重算/重建（大型历史约 2–4 倍速）")
+    ap.add_argument("--verify", action="store_true",
+                    help="导入后逐会话比对消息条数与镜像一致（只比本轮真正导入的会话；不一致则退出码 3）")
     args = ap.parse_args()
 
     try:
@@ -237,7 +239,7 @@ def main() -> int:
                 relaxed.append(attr)
         print(f"已放宽导入上限（进程内）: {len(relaxed)} 项")
 
-    total = {"imported": 0, "skipped": 0, "failed": 0}
+    total = {"imported": 0, "skipped": 0, "failed": 0, "verify_failed": 0}
     for prof in profiles:
         src = src_root / prof
         if not src.is_dir():
@@ -252,6 +254,8 @@ def main() -> int:
         db = SessionDB(db_path)
         suppressed: list[tuple[str, str]] = []
         touched: list[str] = []
+        src_counts: dict[str, int] = {}
+        imported_sids: list[str] = []
         try:
             if args.fast_import:
                 suppressed = _drop_display_triggers(db_path)
@@ -265,6 +269,7 @@ def main() -> int:
                     print(f"   !! 读取失败 {key}: {exc}")
                     continue
                 sid = sess.get("id", key)
+                src_counts[sid] = len(sess.get("messages") or [])
                 try:
                     res = db.import_sessions([sess])
                 except Exception as exc:
@@ -275,6 +280,7 @@ def main() -> int:
                     touched.append(sid)
                     if res.get("imported"):
                         total["imported"] += 1
+                        imported_sids.append(sid)
                         print(f"   + {sid}  已导入")
                     else:
                         total["skipped"] += 1
@@ -300,14 +306,36 @@ def main() -> int:
                 if uid_total >= 0 and uid_nulls > 0:
                     print(f"   !! {prof}: {uid_nulls} 行 message_uid 为空——官方 messages_message_uid_insert "
                           f"触发器可能改名/失效（schema 变动信号），请核对官方 schema 后更新 INDEX_TRIGGERS 自检")
+            if args.verify and imported_sids:
+                bad: list[tuple[str, int, int]] = []
+                try:
+                    vcon = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=30)
+                    try:
+                        for sid in imported_sids:
+                            want = src_counts.get(sid)
+                            if want is None:
+                                continue
+                            got = vcon.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?",
+                                               (sid,)).fetchone()[0]
+                            if got != want:
+                                bad.append((sid, want, got))
+                    finally:
+                        vcon.close()
+                except Exception as exc:
+                    print(f"   !! [{prof}] 校验读库异常：{exc!r}")
+                    total["verify_failed"] += 1
+                total["verify_failed"] += len(bad)
+                print(f"[{prof}] 校验：{len(imported_sids)} 个导入会话逐条比对，不一致 {len(bad)} 个")
+                for sid, want, got in bad[:10]:
+                    print(f"   !! {sid}: 镜像 {want} / 恢复 {got}")
         finally:
             try:
                 db.close()
             except Exception:
                 pass
     print(f"== 完成: imported={total['imported']}  skipped(已存在)={total['skipped']}  "
-          f"failed={total['failed']} ==")
-    return 0 if total["failed"] == 0 else 3
+          f"failed={total['failed']}  verify_failed={total['verify_failed']} ==")
+    return 0 if total["failed"] == 0 and total["verify_failed"] == 0 else 3
 
 
 if __name__ == "__main__":

@@ -99,7 +99,7 @@ git show <sha>:sessions/main/$SID.jsonl > /tmp/$SID.jsonl   # 取回（分片则
 python -c "import json;d=json.load(open('/tmp/$SID.jsonl'));print(len(d['messages']))"   # 自检条数
 ```
 
-再把文件放进 `<src>/main/` 目录，用 `restore_sessions.py --source <src> --profile main --fast-import` 导回活库
+再把文件放进 `<src>/main/` 目录，用 `restore_sessions.py --source <src> --profile main --fast-import --verify` 导回活库
 （导入是**追加**，不改现有会话；导入前先 `cp state.db state.db.bak-<时间>`）。
 
 实测（2026-10-24）：取回 `20261024_113906_c858a0` → 1,815,974 字节、'检查 hermes 自动压缩是否失效'、277 条消息，与镜像一致。

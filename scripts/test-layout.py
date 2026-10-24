@@ -75,7 +75,14 @@ def main() -> int:
     t2 = time.time()
     check("S5 40MB 级扫描可用", json.loads(out3) == big, f"序列化 {t1-t0:.1f}s / 稳定化 {t2-t1:.1f}s / {len(big_raw)/1048576:.0f}MB")
 
-    print(f"\n== 5 项，失败 {fails} ==")
+    # S6 前半段必须严格是 KEEP_KEYS（身份 + messages），其余全在尾部
+    order = [k for k, _s, _e in top_level_members(out)]
+    kept = [k for k in order if k in KEEP_KEYS]
+    expect = [k for k in KEEP_KEYS if k in order]
+    check("S6 前半段＝KEEP_KEYS 且 messages 收尾", kept == expect and kept[-1] == "messages",
+          f"{len(kept)} 个")
+
+    print(f"\n== 6 项，失败 {fails} ==")
     return 0 if fails == 0 else 2
 
 

@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.18
+version: 0.4.19
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -117,7 +117,7 @@ metadata:
 - **`restore_sessions.py --source` 收的是「父目录」不是 profile 目录**：结构必须是 `<src>/<profile>/*.jsonl`（`--source …/src` 对应 `src/main/…`）；指到 `src/main` 会去找 `src/main/main`，报源目录不存在。
 - **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（新机上首次同步前设置一次即可）。
 - **GitHub 单文件 100MiB 硬限**：会话导出件按会话拆分；v0.3 起原样文本存储、**>45MB 的巨会话按 45MB 切片**（`<sid>.part-NNNN.jsonl`，0.4.10 由 90MB 下调——低于 GitHub「建议 50MB」，并为硬限留 2.2 倍余量；活跃巨会话每轮只有**末片**变化，不再整份重算大 blob）。字节等价由 `scripts/test-split.py` 回归（切片+按片号拼接 == 原始行，逐字节）。
-- **头部字段一变，整份分片全成新 blob**（0.4.18，2026-10-24 实测）：会话是「一行=一个会话」的 JSON，头部有 `message_count` / token 计数 / `timings` / `last_activity_at` / `transcript_revision` 等**每轮都会变**的统计字段；头部一变，整行字节全变 ⇒ 固定字节偏移切出的**每一个分片都重写**（实名单轮 827MB，10 个巨会话各 3–6 个 45MB 分片全改；仓体积约 150MB/小时增长）。修法＝`scripts/session_layout.py` 的**尾部稳定化**：零解析、字符串感知地把这些易变成员整段剪下移到对象末尾（不改任何内容的字节），于是未变会话完全一致、有追加的只改末尾分片。只对 >5MB 的会话行生效（小文件整份重写无所谓），解析失败一律原样保留。回归＝`scripts/test-layout.py`（5 项：等价/幂等/字段落尾/追加前缀稳定/40MB 性能）。
+- **头部字段一变，整份分片全成新 blob**（0.4.18，2026-10-24 实测）：会话是「一行=一个会话」的 JSON，头部有 `message_count` / token 计数 / `timings` / `last_activity_at` / `transcript_revision` 等**每轮都会变**的统计字段；头部一变，整行字节全变 ⇒ 固定字节偏移切出的**每一个分片都重写**（实名单轮 827MB，10 个巨会话各 3–6 个 45MB 分片全改；仓体积约 150MB/小时增长）。修法＝`scripts/session_layout.py` 的**尾部稳定化**：零解析、字符串感知地把这些易变成员整段剪下移到对象末尾（不改任何内容的字节），于是未变会话完全一致、有追加的只改末尾分片。只对 >5MB 的会话行生效（小文件整份重写无所谓），解析失败一律原样保留。回归＝`scripts/test-layout.py`（5 项：等价/幂等/字段落尾/追加前缀稳定/40MB 性能）；**整轮收益的验收口径**＝下一轮 `git diff-tree --raw` 聚合出的改动字节应显著下降（见 `references/session-storage.md` 的「单轮 churn 归因」），不能只凭单元测试就说「体积问题解决了」。
 - **历史体积机制（关键）**：git 仓库＝最新快照＋**每个被改文件的每一版**——同步的「强制覆盖」语义只作用于最新树（≈镜像工作区），**挡不住历史堆积**（实测：全历史 blob 2.01GB vs 最新树 0.72GB；单会话 10 个版本＝313MB）。根因＝会话导出是**超长单行 JSON**、头部元数据每轮必变 × 整包 gzip → deflate 级联 → 版本间字节重叠 **0%** → git 增量全失效 → 每轮 ~226MB 完整入库（仓库 ~0.5GB/天）。**已治理（v0.3，0.3.0）＝原样文本格式：同数据对照实测 +79.40MB/轮 → +0.01MB（整件）/ +2.25MB（分片）级；机理与三方案对照见 `references/session-storage.md`。** 单文件 95MB 同步闸由分片格式顺带拆除（分片后最大件 45MB）；体积读数用**本地对象库**实测（GitHub `size` 字段有滞后）。
 - **意外中断与并发自愈**：自带单实例防撞锁——**v3.2 起锁内记录持有者 pid：持有进程已消失（触发端被掐/崩溃）立即接管，3h 陈旧窗仅兜底**（早期版本纯 3h 窗口＝被掐后可能空窗最长 3 小时）；被强杀遗留的 `.git/index.lock`（>120s）自动清除并重试一次。真机实测：进程在 `git add` 瞬间被杀 → 下一轮同步报 `rc=128` —— 自愈代码即为覆盖该情形；被掐轮次的**未推提交由下一轮随带补推（零丢失）**。- **网关重启与在跑轮次的三种组合**（先取证据、都别慌）：① drain 杀掉父脚本、`sync.py` 作为**脱离进程继续跑完**——`hermes cron runs` 会停在 `running` 或落 `unknown`，**判轮次死活只认锁文件里的 pid 存活**（存活＝还在跑、会自行落地；已死＝孤儿锁由下一轮立即接管）；② 在途提交被掐——判「有没有丢数据」**不看 run 状态**，用 `git merge-base --is-ancestor <该轮提交> <远端HEAD>`：命中＝已进远端历史、零丢失；未命中才去查采集/推送段；③ 父脚本被杀时外层超时兜底一并消失 ⇒ 该轮不受 `script_timeout` 约束，必要时人工盯或回收。另：两轮相撞时后来者**立即让路**（日志 `已有另一轮同步在进行（锁年龄 Ns）——本轮退出，让路`）——设计行为，不是失败。
 - **推送断连（exit 3）≠ 没推上去**：`send-pack: unexpected disconnect while reading sideband packet` / `Connection to ssh.github.com closed by remote host` 是传输层断线——GitHub 可能已收完整包并更新 ref，只是客户端没拿到确认。**判据只认远端口**：`git ls-remote origin main`（或 `… HEAD`）与 `git rev-parse HEAD` 比对；**别拿本地 `origin/main` 跟踪引用当远端**（失败的 push 不更新它，两种误读都会发生）。一致 ⇒ 零丢失、失败仅是确认缺失：不重推、不 force、不改机制，`hb-sync-health.json` 记 1 次失败、下轮照常；不一致 ⇒ 提交仍在本地、下一轮自动补推。**判「这轮为什么慢」先看在跑 worker 数**：十几张看板 worker 并行时导出段会涨 2–3 倍（实测 485–627s → 1481s），整轮逼近外层预算但仍在预算内，别当卡死。
@@ -126,6 +126,7 @@ metadata:
 - **官方导入尺寸上限**（≤5MB/≤1万条/单次 ≤25MB 等）：面向 Web 场景；恢复工具在**本进程内**放宽这些常量（不改官方文件）。若官方改版导致常量改名，工具会记录并继续（检查 `hasattr`）。
 - **导出不脱敏**：会话文件含对话原文与凭据讨论 → 仓必须永远私有。
 - **备份范围（0.3.8 起）**：`kanban/` 只备数据库（`boards/*/kanban.db`，约 30MB）；任务运行工作区/证据/日志属过程记录**不入云**（实测占该目录 96%：758MB/4.3 万文件，含整份 git 克隆）——恢复后看板卡片与 runs 在、任务临时工作区不在（预期，别当缺件报）。**范围归 owner**：审计发现白名单外的数据（凭据、快照等）只**报告**——列出路径、体积、可否重取，由 owner 一句话定是否纳入；不擅自扩大或缩小备份范围（那是政策，不是技术优化）。
+- **跨档只读边界（备份/审计/演练通用）**：审计与演练必然读到**别的 profile** 的库与会话文件——**读可以，写不行**。发现「镜像有、活库没有」的会话（外部回滚/手工清理造成）时：把文件复制到 `temp/hcb-lost-sessions-<date>/src/<profile>/`、写一份含导入命令的 README、然后**只报告不导回**——那是别的会话的数据，导入/删除都要 owner 明确点头。同理：恢复演练一律落**空白 `--home`**（先用 `mkdir -p <B>/home/profiles` 建好目录；`--source` 收的是含 `<profile>/` 的父目录），跑完 `rm -rf`，绝不指向真实 home。
 - **桌面端 Local Storage 被占用**：群聊/置顶数据只有桌面端退出后才能安全覆盖 → 收尾器处理。
 - **半壳档**（如 `profiles/.deleted`、只余 `state.db` 的已退役档）：导出会失败/跳过，属预期；采集时已排除 `.deleted`。
 - **重启网关会连坐当前对话**：`hermes gateway restart` 由收尾器在桌面端关闭后执行，不要在对话中途手动跑。

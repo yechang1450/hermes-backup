@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.15
+version: 0.4.16
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -67,6 +67,7 @@ metadata:
 - `scripts/test-hb-health.py` — 健康记账回归（sync.py 单一来源 + 包装"未跑完"补偿去重）
 - `scripts/test-audit-coverage.py` — 覆盖率审计的**负向对照**（8 场景合成夹具：全等 / 缺会话 / 多会话 / 镜像超前 / 镜像落后 / 轮内新建豁免 / 孤立组 / 坏 JSON；证明审计"该红就红"，不碰真库）
 - `scripts/test-split.py` — 分片**字节等价**回归（合成 2MB/100MB/45MB 三条会话，断言每片≤阈值、按片号拼接后与原行逐字节相同、片数＝ceil(字节/阈值)）
+- `scripts/test-reap-exporters.py` — 孤儿导出回收回归（3 场景：孤儿被杀 / 父进程健在者不动 / 命令行只提到文件名者不杀）
 - `scripts/audit-coverage.py` — 覆盖率审计：①会话层（镜像会话文件 vs 活库 state.db 逐会话条数）②文件层（`--with-files`：HERMES_HOME 顶层条目 vs 采集白名单，列出未分类/漏备项）；判据＝硬伤退出码 1
 - `scripts/rotate-generation.sh` — 数据仓换代（孤儿快照单提交种子 → 新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑）
 - `references/generations.md` — 数据仓「换代」归档预案（体积到阈值时换新代仓、旧仓冻结为只读档案；不重写历史）
@@ -109,7 +110,7 @@ metadata:
 - **跑会 import `hermes_state` 的脚本必须经 `tools/run_in_runtime.py`**：在本机终端里 `python <脚本>.py` 会被启动器以**另一个解释器**（缺 ruamel 等运行期依赖）经 runpy 重跑，报 `ModuleNotFoundError: No module named 'ruamel'`；就是 `python -c "import <模块>"` 也不能豁免（`SessionDB(...)` 构造会把进程切到工具树 python）。正确形态一律是 `python <REPO>/tools/run_in_runtime.py <脚本> [参数]`——恢复、对账、A/B 测试脚本皆同。同理：**恢复/对账不要与 `hermes update` 并发**，更新收尾持有 checkout 锁，卡住的子进程会 0% CPU 空转（判据：RSS 几 MB、CPU 0、日志停在启动横幅）。
 - **`sync.py` 的 home 只按 `LOCALAPPDATA` 解析（不读 `HERMES_HOME` 环境变量）**：`HERMES_HOME` 只影响两个包装脚本（哨兵/周期）与 hook 的路径。写单测时必须**注入 `sync.HERMES_HOME / HEALTH_FILE / ATTENTION_MARKER / RUNS_LOG`** 模块属性，否则会写进真实 `state/`（2026-10-23 实测踩过：把假失败记进了真健康文件）。
 - **推送卡在"零字节"时先看进程树，别只看网络**（0.4.9）：`subprocess` 超时只杀直接子进程，`git pack-objects` / `ssh` 这些孙子会留下来占住管道 → **之后每次重试都秒卡、零字节**（2026-10-23 实案：一轮推 10 分钟零字节、三次重试全卡，GitHub 侧只报 `Connection … closed by remote host`）。现在的 `sync.py`：①所有 git 网络操作注入 `GIT_SSH_COMMAND` 保活（ServerAliveInterval=20 / CountMax=30 / TCPKeepAlive）；②超时杀**整棵进程树**；③失败后回收本仓的**孤儿** git/ssh（只认命令行带本镜像路径或 `ssh.github.com … git-receive-pack`、且父进程已消失的）。判据三件套：`git push` 子进程存在 + `pack-objects` CPU 不涨 + ssh 读写 0 字节 ⇒ 管道死了，不是网速慢。
-- **导出超时只杀直接子进程 → 孤儿导出会撞死下一轮**（0.4.15，2026-10-24 实案）：连续两轮 3300s 超时，原因是 `subprocess` 超时只杀直接子进程（`run_in_runtime` 启动器），真正的导出进程活下来占住 `profiles/<档>/state.db` 与镜像；下一轮再起一个，两个导出同时写同一批文件 → 双双卡死、RSS 涨到 1.6GB。现在三处收口：①导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()` 杀整树；②每轮启动后 `_reap_orphan_exporters()` 只回收「父进程已消失」的导出（识别条件：python 解释器 ＋ 命令行含 `hermes-cloud-backup` 与 `export_all_profiles.py` ＋ 带 `--home`/`--out`，避免误杀只是提到文件名的进程）；③包装器 `hb-autosync` 超时也杀整树。回归＝`scripts/test-reap-exporters.py`（3 场景）。**判据：** 超时后先看 `ps` 里有没有 `export_all_profiles` 进程，再看下一轮是否同时存在两个导出。
+- **导出超时只杀直接子进程 → 孤儿导出会撞死下一轮**（0.4.15，2026-10-24 实案）：连续两轮 3300s 超时，原因是 `subprocess` 超时只杀直接子进程（`run_in_runtime` 启动器），真正的导出进程活下来占住 `profiles/<档>/state.db` 与镜像；下一轮再起一个，两个导出同时写同一批文件 → 双双卡死、RSS 涨到 1.6GB。现在三处收口：①导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()` 杀整树；②每轮启动后 `_reap_orphan_exporters()` 只回收「父进程已消失」的导出（识别条件：python 解释器 ＋ **真实参数**里以 `export_all_profiles.py` 结尾 ＋ 带 `--home`/`--out`；只看 argv 不看整条命令行文本，否则自己的 `-c` 探针只要代码里提到这些字眼就会自匹配）；③包装器 `hb-autosync` 超时也杀整树。回归＝`scripts/test-reap-exporters.py`（3 场景）。**判据：** 超时后先看 `ps` 里有没有 `export_all_profiles` 进程，再看下一轮是否同时存在两个导出。
 - **官方 schema 会加触发器，fast-import 只摘"索引类"**（v0.22.5 实测）：库里现有 **13 个**触发器——除 display 4 个 + FTS 6 个（这 10 个由 fast-import 摘除、导入后重算/rebuild/原样恢复），还有 3 个**保持生效**：`messages_message_uid_insert`（插入时填 `message_uid`）、`messages_transcript_revision_update`（维护会话修订号）、`sessions_runtime_ledger_delete_guard`（删除护栏，与导入无关）。恢复结束会自检 `message_uid` 空值并打印 `uid 空值 0/N`；**空值 >0 ⇒ 官方改名/失效信号**，先核对官方 schema 再改 `INDEX_TRIGGERS`，别盲摘。**触发器总数随官方版本变**（实测 v0.22.2＝11 个＝10 索引＋uid；v0.22.5＝13 个）——脚本与验收里别写死数量，只断言「索引类 10 个可摘可原样还原」＋「uid 空值 0/N」。v0.22.5 实测：21,693 条巨会话 `--fast-import` 恢复 + FTS 重建 **17.4s**、`message_uid` 全非空。
 - **对账三个数别混用（审计的「活库消息数」不含孤立组）**：`audit-coverage.py` 打印的 `活库 X 会话/Y 消息` 里 Y 只数「sessions 行存在」的消息；`孤立 N 组/M 条`（messages 有行、sessions 无会话行）是**单列的**。裸 `SELECT COUNT(*) FROM messages` 会比 Y 多出 M（实案 proj-83：24,930 vs 25,748，差 818 ＝ 孤立 4 组 818 条）。恢复对账、子代理汇报里拿裸 COUNT(*) 去比镜像文件，会把孤立组误读成「备份落后/丢数据」——**先分解成「会话内消息＋孤立组消息」两个数再比**；镜像侧消息数一律按文件解析（分片按片名拼接），不信目录里的文件数。
 - **`restore_sessions.py --source` 收的是「父目录」不是 profile 目录**：结构必须是 `<src>/<profile>/*.jsonl`（`--source …/src` 对应 `src/main/…`）；指到 `src/main` 会去找 `src/main/main`，报源目录不存在。
@@ -141,7 +142,7 @@ metadata:
 3. **`ESTOP` 文件在不在**（`%LOCALAPPDATA%/hermes/ESTOP`）：`hermes pause` 跨重启保留，会让 cron 静默停摆而网关看起来一切正常；在就 `hermes resume`。
 4. cron 是否还在跳：读 `cron/executions.db` 最近几行（哨兵应每 2–3 分钟一条 `completed`），不要只信 `cron list` 的 Last Run。
 5. 同步线：锁文件在不在 + `state/hb-sync-runs.jsonl` 最后一行 + `git ls-remote` 与本地 HEAD；健康文件 `consecutive_failures`。**更新后跑满一整天再判断稳定性**——更新期间那几轮会因资源争用变慢（实测 export 1181s / git 1367s），不是机制坏了。
-6. 环境漂移：`hermes update` 会换 tools python（实测 3.14.7→3.14.9）并换出旧包——`python -c "import psutil"` 之类可选依赖要复验；`HERMES_HOME/scripts/` 里的运行副本与技能副本用 sha256 比对（更新不应覆盖，但要证）。
+6. 环境漂移：`hermes update` 会换 tools python（实测 3.14.7→3.14.9）并换出旧包——`python -c "import psutil"` 之类可选依赖要复验；`HERMES_HOME/scripts/` 里的运行副本与技能副本用 sha256 比对（更新不应覆盖，但要证）。**同时复核网关启动器**（`gateway-service/Hermes_Gateway.vbs`/`.cmd`）：它们内嵌安装时的解释器绝对路径，换 python 后路径失效 → 计划任务照报 `Last Result 0` 但网关根本没起来（`hermes gateway status` 报 `No gateway process detected`）；修法是 `hermes gateway install --start-on-login --no-start-now` 重生成启动器再 `schtasks /Run`，详见 `windows-autostart-ops`。
 7. 配置仍在：`hermes config get sessions.max_export_messages` 应为 `0`（否则巨会话导出会整包失败且 rc=0 无产物）。
 8. **恢复链路复验（最要紧）**：跑 `references/restore-drill.md` 的「低成本冒烟」两例（小档整档 + 一个巨会话），确认官方导入 API / schema 变动没有破坏恢复。
 
@@ -153,6 +154,7 @@ metadata:
 - 全量验收入口：`templates/RESTORE.md` 第 6 节清单。
 - **全量审计（大改后或定期）**：四路核对（维护笔记③）＋版本字符串全扫（如 `grep -rn '0\.3\.' <技能目录>`，捕捉状态行/示例漂移）＋点火一轮真同步核 `git ls-remote` 前进；线上设置与隐私面 → `github-security-audit` 技能。
 - **完整性＝两条腿，缺一条都不算数**：①**演练**（镜像 → 沙箱，证明"能恢复"）②**覆盖率审计**（活库 → 镜像，证明"备的是全部"）。审计默认只审会话层；**要连文件层（`--with-files`）一起跑**才算覆盖配置/记忆/技能/平台数据那一半。判据一句话：缺会话／多会话／镜像条数超前／以解析失败＝**硬伤**（退出码 1），**落后＝正常增量**，孤立消息组＝活库自身残留不计。
+- **审计的两类"非硬伤"要会读，别急着当漏备**：①**文件层轮内新建豁免**（0.4.13）——白名单目录/文件在镜像缺失，但源内容 mtime 晚于本轮 `started_at` 时，判「轮内新建、下一轮会采」，输出在 `· 轮内新建…` 一行、不计硬伤（实案：`desktop/interrupted_turns.json` 由桌面端在轮后写入，被误判为漏备）；②**镜像独有会话**（审计报「多会话」）——通常是活库被外部事件换过（state.db 回滚/还原、手工清理），不是漏备也不是采集错：下一轮会从最新树 prune，**git 历史仍保留**；要留档先另存文件（含分片），要导回用 `git show <sha>:sessions/main/<sid>.jsonl` 取出后走 `--source` 导入。看到「多会话」先问「活库最近是否被回滚过」，别从活库删东西。
 - **审计 PASS 必须与负向对照成对出现**：改了审计器或采集白名单后跑 `scripts/test-audit-coverage.py`（8 场景合成夹具，断言"该红的会红"）。只有 PASS 没有负向对照＝**没有证据**（审计可能根本没在看）；断言要落在输出字段（`缺 N`／`新建豁免 N`／`超前 N`），只断言退出码会把"因别的原因失败"误当通过。
 - **验收以「最后同步时刻」为界**：快照之后的新会话/改动不在备份里（属预期，下轮同步带上）。对账做三向差集——真机∩快照（应精确一致）、真机−快照（＝同步后新建）、快照−真机（＝曾删除；快照保留历史）；给用户解释时先讲这层边界，避免把预期差异当故障。
 - **时间锚点**：报「损失窗口/新鲜度」前先实测当前时间（`date`）并按当下重算——隔夜或隔数轮后旧读数的时间锚（如「今晚」）即失效，禁止沿用旧时点表述。

@@ -792,9 +792,11 @@ def _reap_orphan_exporters() -> list[int]:
         try:
             if (p.info["name"] or "").lower() not in ("python.exe", "python"):
                 continue
-            cl = " ".join(p.info["cmdline"] or [])
-            if not ("export_all_profiles.py" in cl and "hermes-cloud-backup" in cl
-                    and "--home" in cl and "--out" in cl):
+            argv = p.info["cmdline"] or []
+            # 必须是**真实参数**里带脚本路径与 --home/--out，而不是某个 -c 代码串里提到这些字眼
+            if not any(str(a).endswith("export_all_profiles.py") for a in argv[1:]):
+                continue
+            if not ("--home" in argv and "--out" in argv and "hermes-cloud-backup" in " ".join(argv)):
                 continue
             if p.info["pid"] == me:
                 continue

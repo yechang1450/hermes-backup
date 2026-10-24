@@ -53,14 +53,21 @@ def main() -> int:
     print("[1] 单片 ≤ 阈值:", "PASS" if not over else "FAIL %s" % over)
     ok &= not over
 
-    # 2) 按会话把片拼回，逐字节比对
+    # 2) 按会话把片拼回，逐字节比对；>STABILIZE_MIN_BYTES 的行会被尾部稳定化（成员重排），
+    #    这时判"语义等价"（json.loads 相同）+ 消息条数相同，而不是逐字节。
+    import json as _json
     for sid, original in (("small0001", lines[0]), ("giant0002", lines[1]), ("edge0003", lines[2])):
         parts = sorted(outdir.glob(f"{sid}.part-*.jsonl"))
         single = outdir / f"{sid}.jsonl"
         blob = single.read_bytes() if single.exists() else b"".join(p.read_bytes() for p in parts)
-        same = blob == original
-        print("[2] %s 复原：%s（原 %d 字节 / 复原 %d 字节 / %d 片）"
-              % (sid, "PASS" if same else "FAIL", len(original), len(blob), len(parts) or 1))
+        if len(original) > sync.STABILIZE_MIN_BYTES:
+            same = _json.loads(blob) == _json.loads(original)
+            mode = "语义等价"
+        else:
+            same = blob == original
+            mode = "逐字节"
+        print("[2] %s 复原（%s）：%s（原 %d 字节 / 复原 %d 字节 / %d 片）"
+              % (sid, mode, "PASS" if same else "FAIL", len(original), len(blob), len(parts) or 1))
         ok &= same
 
     # 3) 片数预期：按阈值动态推导（>阈值 才切片，片数 = ceil(字节数/阈值)）

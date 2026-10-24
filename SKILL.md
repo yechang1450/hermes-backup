@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.25
+version: 0.4.26
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -67,9 +67,10 @@ metadata:
 - `scripts/test-hb-health.py` — 健康记账回归（sync.py 单一来源 + 包装"未跑完"补偿去重）
 - `scripts/test-audit-coverage.py` — 覆盖率审计的**负向对照**（8 场景合成夹具：全等 / 缺会话 / 多会话 / 镜像超前 / 镜像落后 / 轮内新建豁免 / 孤立组 / 坏 JSON；证明审计"该红就红"，不碰真库）
 - `scripts/test-split.py` — 分片**字节等价**回归（合成 2MB/100MB/45MB 三条会话，断言每片≤阈值、按片号拼接后与原行逐字节相同、片数＝ceil(字节/阈值)）
-- `scripts/test-layout.py` — 尾部稳定化的回归（5 项：语义等价 / 幂等 / 易变字段落尾 / 追加后 messages 前缀不变 / 40MB 性能）
-- `scripts/session-churn.py` — **单轮重写量**量测器（按目录汇总新增 blob 字节、列 >5MB 改动）：判断「体积增长有没有真被压住」只认它，不看 `--stat` 的文件数/行数
-- `scripts/session_layout.py` — 会话 JSON 的尾部稳定化（零解析扫描，把易变统计字段移到对象末尾）
+- `scripts/test-layout.py` — 尾部稳定化的回归（6 项：语义等价 / 幂等 / 字段落尾 / 追加后 messages 前缀不变 / 40MB 性能 / 前半段＝KEEP_KEYS 且 messages 收尾）
+- `scripts/churn-report.py` — **单轮重写量**量测器（按目录汇总新增 blob 字节、列 >5MB 改动）：判断「体积增长有没有真被压住」只认它，不看 `--stat` 的文件数/行数；`git --raw` 解析用 `-z`，带空格路径不会错位
+- `scripts/session-churn.py` — 同功能的早期副本（解析仍按空格切列，`desktop-overlay/Local Storage/…` 会被错记成 `Storage/leveldb`）；**两者并存时以 `churn-report.py` 为准**，不要两份各改一次
+- `scripts/session_layout.py` — 会话 JSON 的尾部稳定化（零解析扫描；**只留身份字段＋`messages` 在前，其余成员全部移到对象末尾**）
 - `scripts/test-reap-exporters.py` — 孤儿导出回收回归（3 场景：孤儿被杀 / 父进程健在者不动 / 命令行只提到文件名者不杀）
 - `scripts/audit-coverage.py` — 覆盖率审计：①会话层（镜像会话文件 vs 活库 state.db 逐会话条数）②文件层（`--with-files`：HERMES_HOME 顶层条目 vs 采集白名单，列出未分类/漏备项）；判据＝硬伤退出码 1
 - `scripts/rotate-generation.sh` — 数据仓换代（孤儿快照单提交种子 → 新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑）
@@ -121,9 +122,9 @@ metadata:
 - **对账三个数别混用（审计的「活库消息数」不含孤立组）**：`audit-coverage.py` 打印的 `活库 X 会话/Y 消息` 里 Y 只数「sessions 行存在」的消息；`孤立 N 组/M 条`（messages 有行、sessions 无会话行）是**单列的**。裸 `SELECT COUNT(*) FROM messages` 会比 Y 多出 M（实案 proj-83：24,930 vs 25,748，差 818 ＝ 孤立 4 组 818 条）。恢复对账、子代理汇报里拿裸 COUNT(*) 去比镜像文件，会把孤立组误读成「备份落后/丢数据」——**先分解成「会话内消息＋孤立组消息」两个数再比**；镜像侧消息数一律按文件解析（分片按片名拼接），不信目录里的文件数。
 - **`restore_sessions.py --source` 收的是「父目录」不是 profile 目录**：结构必须是 `<src>/<profile>/*.jsonl`（`--source …/src` 对应 `src/main/…`）；指到 `src/main` 会去找 `src/main/main`，报源目录不存在。
 - **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（新机上首次同步前设置一次即可）。
-- **GitHub 单文件 100MiB 硬限**：会话导出件按会话拆分；v0.3 起原样文本存储、**>45MB 的巨会话按 45MB 切片**（`<sid>.part-NNNN.jsonl`，0.4.10 由 90MB 下调——低于 GitHub「建议 50MB」，并为硬限留 2.2 倍余量；活跃巨会话每轮只有**末片**变化，不再整份重算大 blob）。字节等价由 `scripts/test-split.py` 回归（切片+按片号拼接 == 原始行，逐字节）。
+- **GitHub 单文件 100MiB 硬限**：会话导出件按会话拆分；v0.3 起原样文本存储、**>12MB 的巨会话按 12MB 切片**（`<sid>.part-NNNN.jsonl`；0.4.10 由 90→45MB，0.4.26 再降到 12MB——尾部稳定化后每轮只有「变动的那个分片」重写，阈值直接决定单轮重写量：45MB 时稳态仍 249MB/轮、其中 208MB 是 10 个活动会话的末片；12MB 把末片压到 1/4，距 100MB 硬限仍有 8 倍余量）。字节等价由 `scripts/test-split.py` 回归（切片+按片号拼接 == 原始行，逐字节）。
 - **量重写量用自带工具**：`python tools/churn-report.py`（默认镜像 HEAD~1..HEAD）按目录汇总新增 blob 字节，并列出 >5MB 文件；判据——同一个会话的多个 `.part-` 同时出现在 >5MB 列表里，说明它仍被整份重写。注意 git `--raw` 对带空格的路径会加引号，解析必须用 `-z`（本工具已处理；2026-10-24 实案：`desktop-overlay/Local Storage` 曾被按空格切列误记成 `Storage/leveldb`）。
-- **头部字段一变，整份分片全成新 blob**（0.4.18，2026-10-24 实测）：会话是「一行=一个会话」的 JSON，头部有 `message_count` / token 计数 / `timings` / `last_activity_at` / `transcript_revision` 等**每轮都会变**的统计字段；头部一变，整行字节全变 ⇒ 固定字节偏移切出的**每一个分片都重写**（实名单轮 827MB，10 个巨会话各 3–6 个 45MB 分片全改；仓体积约 150MB/小时增长）。修法＝`scripts/session_layout.py` 的**尾部稳定化**：零解析、字符串感知地把这些易变成员整段剪下移到对象末尾（不改任何内容的字节），于是未变会话完全一致、有追加的只改末尾分片。只对 >5MB 的会话行生效（小文件整份重写无所谓），解析失败一律原样保留。回归＝`scripts/test-layout.py`（5 项：等价/幂等/字段落尾/追加前缀稳定/40MB 性能）；**整轮收益的验收口径**＝`scripts/session-churn.py` 量的是**格式切换后的第二个轮次**（切换那一轮含一次性重排，见下一条），且改动字节应显著下降；不能只凭单元测试就说「体积问题解决了」。
+- **头部字段一变，整份分片全成新 blob**（0.4.18，2026-10-24 实测）：会话是「一行=一个会话」的 JSON，头部有 `message_count` / token 计数 / `timings` / `last_activity_at` / `transcript_revision` 等**每轮都会变**的统计字段；头部一变，整行字节全变 ⇒ 固定字节偏移切出的**每一个分片都重写**（实名单轮 827MB，10 个巨会话各 3–6 个 45MB 分片全改；仓体积约 150MB/小时增长）。修法＝`scripts/session_layout.py` 的**尾部稳定化**：零解析、字符串感知地**只保留身份字段（`KEEP_KEYS`：id/source/user_id/session_key/chat_id/…）与 `messages` 在前，其余顶层成员全部移到对象末尾**（不改任何内容的字节），于是未变会话完全一致、有追加的只改末尾分片。**别写「正向列举易变字段」**——第一版正是那么写的，漏了 `last_activity_description`、`runtime_revision` 等同样会变的字段，整行照样被推翻、白改一版；反向白名单才成立。只对 >5MB 的会话行生效（小文件整份重写无所谓），解析失败一律原样保留。回归＝`scripts/test-layout.py`（6 项：等价/幂等/字段落尾/追加前缀稳定/40MB 性能/前半段严格＝KEEP）；**整轮收益的验收口径**＝`scripts/churn-report.py` 量的是**格式切换后的第二个轮次**（切换那一轮含一次性重排，见下一条），且改动字节应显著下降；不能只凭单元测试就说「体积问题解决了」。
 - **体积改动的验收必须跨「两个稳定化轮次」，不能拿格式切换那一轮当判据**：改存储格式/切片策略后的**第一轮**会把受影响文件整体重写一遍（一次性成本），单看那一轮的重写量会把「重排」误读成「没修好」——实案 827MB → 967MB 看着更糟，其实 967 里混着全部大会话的首次重排。做法：记下基线 → 等**下一轮**（两个轮次都是新格式）→ 用 `scripts/session-churn.py` 量 → 只有「未变会话不再出现、巨会话只剩末片」才算成立；连续两轮都仍有整份巨会话重写，说明变的是**内容**（压缩改写历史等），要换更深的方案（一条消息一行 / 按内容寻址），继续调参数没用。
 - **历史体积机制（关键）**：git 仓库＝最新快照＋**每个被改文件的每一版**——同步的「强制覆盖」语义只作用于最新树（≈镜像工作区），**挡不住历史堆积**（实测：全历史 blob 2.01GB vs 最新树 0.72GB；单会话 10 个版本＝313MB）。根因＝会话导出是**超长单行 JSON**、头部元数据每轮必变 × 整包 gzip → deflate 级联 → 版本间字节重叠 **0%** → git 增量全失效 → 每轮 ~226MB 完整入库（仓库 ~0.5GB/天）。**已治理（v0.3，0.3.0）＝原样文本格式：同数据对照实测 +79.40MB/轮 → +0.01MB（整件）/ +2.25MB（分片）级；机理与三方案对照见 `references/session-storage.md`。** 单文件 95MB 同步闸由分片格式顺带拆除（分片后最大件 45MB）；体积读数用**本地对象库**实测（GitHub `size` 字段有滞后）。
 - **意外中断与并发自愈**：自带单实例防撞锁——**v3.2 起锁内记录持有者 pid：持有进程已消失（触发端被掐/崩溃）立即接管，3h 陈旧窗仅兜底**（早期版本纯 3h 窗口＝被掐后可能空窗最长 3 小时）；被强杀遗留的 `.git/index.lock`（>120s）自动清除并重试一次。真机实测：进程在 `git add` 瞬间被杀 → 下一轮同步报 `rc=128` —— 自愈代码即为覆盖该情形；被掐轮次的**未推提交由下一轮随带补推（零丢失）**。- **网关重启与在跑轮次的三种组合**（先取证据、都别慌）：① drain 杀掉父脚本、`sync.py` 作为**脱离进程继续跑完**——`hermes cron runs` 会停在 `running` 或落 `unknown`，**判轮次死活只认锁文件里的 pid 存活**（存活＝还在跑、会自行落地；已死＝孤儿锁由下一轮立即接管）；② 在途提交被掐——判「有没有丢数据」**不看 run 状态**，用 `git merge-base --is-ancestor <该轮提交> <远端HEAD>`：命中＝已进远端历史、零丢失；未命中才去查采集/推送段；③ 父脚本被杀时外层超时兜底一并消失 ⇒ 该轮不受 `script_timeout` 约束，必要时人工盯或回收。另：两轮相撞时后来者**立即让路**（日志 `已有另一轮同步在进行（锁年龄 Ns）——本轮退出，让路`）——设计行为，不是失败。

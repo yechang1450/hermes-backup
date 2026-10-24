@@ -156,8 +156,10 @@ SIZE_GUARD_FILE = 95 * 1024 * 1024      # 单文件上限
 STABILIZE_MIN_BYTES = 5 * 1024 * 1024   # 只对「大会话」做尾部稳定化：小文件整份重写无所谓，
                                         # 但大会话每轮整份重写会拖垮 git 增量（见 session_layout.py）
 SIZE_GUARD_TOTAL = 4096 * 1024 * 1024   # 镜像总量上限（v3 会话不压缩，基数更大）
-PART_MAX = 45 * 1024 * 1024             # 会话分片阈值：低于 GitHub「建议 50MB」、为 100MB 硬限留 2.2 倍余量；
-                                        # 同时把"活跃巨会话每轮重算整个大 blob"的成本摊到末片
+PART_MAX = 12 * 1024 * 1024             # 会话分片阈值（0.4.26 由 45MB 下调）。
+                                        # 尾部稳定化后，每轮只有"变动的那个分片"重写 ⇒ 阈值越小、单轮重写越少
+                                        # （实测 45MB 时稳态 249MB/轮，其中 208MB 全是 10 个活动会话的末片）。
+                                        # 12MB 距 GitHub 单文件 100MB 硬限留 8 倍余量，仍远低于「建议 50MB」。
 
 LOCK_FILE = HERMES_HOME / "state" / "hermes-backup-sync.lock"
 LOCK_STALE_SECONDS = 3 * 3600           # 兜底：无法核实持有者时的陈旧锁窗口（正常由 pid 存活判定立即接管）

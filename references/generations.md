@@ -66,3 +66,13 @@ bash scripts/rotate-generation.sh --from <当前代仓名> --to <新代仓名>
 | 第 1 代 | `hermes-backup` | 2026-10-14 | 体积 4.28GB 接近 GitHub 建议线（2026-10-21 实测）；已按本流程换代 | **archived（只读档案，可克隆）** |
 | **第 2 代** | **`hermes-backup-2026q4`** | **2026-10-21** | **当前在用**（孤儿快照单提交种子 508143dd；快照 11,406 文件 / 1,384 会话件） | 在用 |
 | 第 3 代 | （待建） | — | — | — |
+
+## 容量巡检（例行，5 分钟）
+
+1. **看远端体积**：`gh api repos/<owner>/<repo> --jq .size`（KB；有滞后，以克隆实测为准）。
+2. **看每轮重写量**：`python tools/churn-report.py`（默认 `HEAD~1..HEAD`）。
+   - 健康水位：**新增内容 ≈ 真实新增消息**（几 MB 到几十 MB）；
+   - 异常信号：`>5MB 文件` 里出现**同一个会话的多个 `.part-`** ⇒ 该会话又被整份重写（先查是否刚做过格式迁移，否则查 `session_layout.stabilize` 是否生效）。
+3. **换代**：接近 4.5GB 阈值时跑 `scripts/rotate-generation.sh --from <旧> --to <新> --dry-run` 预演，确认后去掉 `--dry-run`。
+4. 记录：把读数追加到状态页（哪一轮、多少 MB、仓体积），便于回溯"什么时候开始涨"。
+

@@ -84,7 +84,7 @@ GIT_NAME = ""
 GIT_EMAIL = ""
 
 TOOL_FILES = ["sync.py", "session_layout.py", "concat_sessions.py", "apply_routing.py",
-              "restore_sessions.py", "restore_files.py", "run_in_runtime.py",
+              "restore_sessions.py", "restore_files.py", "run_in_runtime.py", "churn-report.py",
               "finish_restore.ps1", "export_all_profiles.py"]
 
 

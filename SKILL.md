@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.27
+version: 0.4.28
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -116,6 +116,7 @@ metadata:
 - **推送预算 900s→1500s、外层 3300s→3900s**（0.4.23）：一次性大重排那轮（900MB 级）推送超 900s 被掐，属合法大包不是故障；外层同步放宽到 3900s（collect+export+commit 最坏 ~1900s）。日常轮次仍只有几十 MB，读数不会变。
 - **推送卡在"零字节"时先看进程树，别只看网络**（0.4.9）：`subprocess` 超时只杀直接子进程，`git pack-objects` / `ssh` 这些孙子会留下来占住管道 → **之后每次重试都秒卡、零字节**（2026-10-23 实案：一轮推 10 分钟零字节、三次重试全卡，GitHub 侧只报 `Connection … closed by remote host`）。现在的 `sync.py`：①所有 git 网络操作注入 `GIT_SSH_COMMAND` 保活（ServerAliveInterval=20 / CountMax=30 / TCPKeepAlive）；②超时杀**整棵进程树**；③失败后回收本仓的**孤儿** git/ssh（只认命令行带本镜像路径或 `ssh.github.com … git-receive-pack`、且父进程已消失的）。判据三件套：`git push` 子进程存在 + `pack-objects` CPU 不涨 + ssh 读写 0 字节 ⇒ 管道死了，不是网速慢。
 - **成功轮要清 `last_error`**（0.4.17）：健康文件是连续性记账的单一来源，失败时写 `last_error`、成功时必须置 `None`——否则「上一轮 timeout 3300s」会一直挂着，被后读的人（包括我）误判成当前仍在失败。`repaired_note` 属历史注记，保留不动。
+- **SQLite 必须用在线备份 API 快照，不能直接拷**（0.4.28）：看板库是 `journal_mode=wal`，而 `-wal`/`-shm` 被排除在备份外 ⇒ 只拷 `.db` 会丢掉尚未 checkpoint 的已提交事务；实测极端情况下**连建表语句都可能不在 `.db` 里**（普通拷贝打开即 `no such table`）。现在 `copy_file()` 对所有 `.db` 走 `snapshot_sqlite()`（`sqlite3.Connection.backup()`）：读穿 WAL、产出自包含紧凑快照，失败自动回退普通拷贝。覆盖 `kanban/*.db`、`shared-state.db`、`projects.db` 以及各档 `projects.db`。回归＝`test-kanban-snapshot.py`（3 项）。
 - **哨兵有超期兜底**（0.4.27）：周期 cron 的 `next_run_at` 会被网关重启重排（实测把 05:57 挪到 06:29，空窗 2.5h）；哨兵现在除「网关重启 / 静默 5 分钟 / 长静默恢复」外，还有 **⑤ overdue**——镜像 `finished_at` 超过 2.5 小时、没在同步、也不满足 20 分钟新鲜闸，就补一轮。回归＝`test-hb-sentinel.py` S8/S9。
 - **导出超时只杀直接子进程 → 孤儿导出会撞死下一轮**（0.4.15，2026-10-24 实案）：连续两轮 3300s 超时，原因是 `subprocess` 超时只杀直接子进程（`run_in_runtime` 启动器），真正的导出进程活下来占住 `profiles/<档>/state.db` 与镜像；下一轮再起一个，两个导出同时写同一批文件 → 双双卡死、RSS 涨到 1.6GB。现在三处收口：①导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()` 杀整树；②每轮启动后 `_reap_orphan_exporters()` 只回收「父进程已消失」的导出（识别条件：python 解释器 ＋ **真实参数**里以 `export_all_profiles.py` 结尾 ＋ 带 `--home`/`--out`；只看 argv 不看整条命令行文本，否则自己的 `-c` 探针只要代码里提到这些字眼就会自匹配）；③包装器 `hb-autosync` 超时也杀整树。回归＝`scripts/test-reap-exporters.py`（3 场景）。**判据：** 超时后先看 `ps` 里有没有 `export_all_profiles` 进程，再看下一轮是否同时存在两个导出。
 - **官方 schema 会加触发器，fast-import 只摘"索引类"**（v0.22.5 实测）：库里现有 **13 个**触发器——除 display 4 个 + FTS 6 个（这 10 个由 fast-import 摘除、导入后重算/rebuild/原样恢复），还有 3 个**保持生效**：`messages_message_uid_insert`（插入时填 `message_uid`）、`messages_transcript_revision_update`（维护会话修订号）、`sessions_runtime_ledger_delete_guard`（删除护栏，与导入无关）。恢复结束会自检 `message_uid` 空值并打印 `uid 空值 0/N`；**空值 >0 ⇒ 官方改名/失效信号**，先核对官方 schema 再改 `INDEX_TRIGGERS`，别盲摘。**触发器总数随官方版本变**（实测 v0.22.2＝11 个＝10 索引＋uid；v0.22.5＝13 个）——脚本与验收里别写死数量，只断言「索引类 10 个可摘可原样还原」＋「uid 空值 0/N」。v0.22.5 实测：21,693 条巨会话 `--fast-import` 恢复 + FTS 重建 **17.4s**、`message_uid` 全非空。

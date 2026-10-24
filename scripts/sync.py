@@ -286,6 +286,16 @@ def copy_file(src: Path, dst: Path) -> bool:
         return False
     dst.parent.mkdir(parents=True, exist_ok=True)
     _COPIED.add(str(dst))
+    if src.suffix.lower() == ".db":
+        # SQLite（本机多为 WAL）：普通拷贝会丢掉还在 -wal 里、尚未 checkpoint 的已提交事务，
+        # 极端情况连建表语句都可能不在 .db 里（见 test-kanban-snapshot.py 的 S1a）。
+        # 一律走在线备份 API 取一致快照；内容相同则跳过以保住 mtime。
+        try:
+            if dst.exists() and dst.stat().st_size == src.stat().st_size and dst.read_bytes() == src.read_bytes():
+                return True
+        except OSError:
+            pass
+        return snapshot_sqlite(src, dst)
     try:
         st = src.stat()
         if dst.exists():
@@ -322,12 +332,60 @@ def prune_unvisited(root: Path) -> int:
     return removed
 
 
+def snapshot_sqlite(src: Path, dst: Path) -> bool:
+    """用 SQLite **在线备份 API** 取一致快照（WAL 里已提交的事务也会带上）。
+
+    为什么不能直接 copy：看板库是 `journal_mode=wal`（实测 workbuddy 板），而 `-wal` 文件
+    不在备份范围内——只拷 `.db` 会丢掉还在 WAL 里、尚未 checkpoint 的已提交事务
+    （restore 后表现为"最近的任务状态没了"）。在线备份 API 会读穿 WAL，产出自包含快照。
+    顺带把空闲页压实（`backup()` 写出的是紧凑库），体积通常小于原文件。
+    """
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dst.with_name(dst.name + ".snapshot-tmp")
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        src_con = sqlite3.connect("file:%s?mode=ro" % src.as_posix(), uri=True, timeout=30)
+        try:
+            out = sqlite3.connect(str(tmp))
+            try:
+                src_con.backup(out)
+            finally:
+                out.close()
+        finally:
+            src_con.close()
+        os.replace(tmp, dst)
+        return True
+    except Exception as e:
+        log(f"!! 快照失败 {src.name}: {e!r}（回退普通拷贝）")
+        try:
+            return copy_file(src, dst)
+        except Exception:
+            return False
+
+
 def copy_kanban_dbs(src: Path, dst: Path) -> int:
     """看板只备份数据库（boards/*/kanban.db）；run 工作区/证据/日志属过程记录，不入云备份。
-    实测：kanban 目录 758MB/4.3 万文件中 96% 是任务运行工作区（含整份 git 克隆）。"""
+    实测：kanban 目录 758MB/4.3 万文件中 96% 是任务运行工作区（含整份 git 克隆）。
+
+    逐个用 `snapshot_sqlite()` 取一致快照（见其 docstring：WAL 模式下直接拷会丢最近事务）。
+    """
     n = 0
-    for db in src.rglob("*.db"):
-        if db.is_file() and copy_file(db, dst / db.relative_to(src)):
+    for db in sorted(src.rglob("*.db")):
+        if not db.is_file():
+            continue
+        target = dst / db.relative_to(src)
+        # 内容相同就跳过（保住 mtime，避免 git 整树重哈希）
+        try:
+            if target.is_file() and target.stat().st_size == db.stat().st_size:
+                if target.read_bytes() == db.read_bytes():
+                    n += 1
+                    continue
+        except OSError:
+            pass
+        if snapshot_sqlite(db, target):
             n += 1
     return n
 

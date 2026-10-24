@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.23
+version: 0.4.24
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -13,7 +13,7 @@ metadata:
 
 # hermes-cloud-backup — Hermes 数据云备份 / 恢复
 
-> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。
+> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。
 
 把本机 Hermes 的全部状态（配置/凭据/记忆/技能/会话/桌面端数据）**线性同步**到一个
 **私有 GitHub 仓**（默认 `hermes-backup`，唯一权威版本在 GitHub），并支持在任何新机上
@@ -122,6 +122,7 @@ metadata:
 - **`restore_sessions.py --source` 收的是「父目录」不是 profile 目录**：结构必须是 `<src>/<profile>/*.jsonl`（`--source …/src` 对应 `src/main/…`）；指到 `src/main` 会去找 `src/main/main`，报源目录不存在。
 - **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（新机上首次同步前设置一次即可）。
 - **GitHub 单文件 100MiB 硬限**：会话导出件按会话拆分；v0.3 起原样文本存储、**>45MB 的巨会话按 45MB 切片**（`<sid>.part-NNNN.jsonl`，0.4.10 由 90MB 下调——低于 GitHub「建议 50MB」，并为硬限留 2.2 倍余量；活跃巨会话每轮只有**末片**变化，不再整份重算大 blob）。字节等价由 `scripts/test-split.py` 回归（切片+按片号拼接 == 原始行，逐字节）。
+- **量重写量用自带工具**：`python tools/churn-report.py`（默认镜像 HEAD~1..HEAD）按目录汇总新增 blob 字节，并列出 >5MB 文件；判据——同一个会话的多个 `.part-` 同时出现在 >5MB 列表里，说明它仍被整份重写。注意 git `--raw` 对带空格的路径会加引号，解析必须用 `-z`（本工具已处理；2026-10-24 实案：`desktop-overlay/Local Storage` 曾被按空格切列误记成 `Storage/leveldb`）。
 - **头部字段一变，整份分片全成新 blob**（0.4.18，2026-10-24 实测）：会话是「一行=一个会话」的 JSON，头部有 `message_count` / token 计数 / `timings` / `last_activity_at` / `transcript_revision` 等**每轮都会变**的统计字段；头部一变，整行字节全变 ⇒ 固定字节偏移切出的**每一个分片都重写**（实名单轮 827MB，10 个巨会话各 3–6 个 45MB 分片全改；仓体积约 150MB/小时增长）。修法＝`scripts/session_layout.py` 的**尾部稳定化**：零解析、字符串感知地把这些易变成员整段剪下移到对象末尾（不改任何内容的字节），于是未变会话完全一致、有追加的只改末尾分片。只对 >5MB 的会话行生效（小文件整份重写无所谓），解析失败一律原样保留。回归＝`scripts/test-layout.py`（5 项：等价/幂等/字段落尾/追加前缀稳定/40MB 性能）；**整轮收益的验收口径**＝`scripts/session-churn.py` 量的是**格式切换后的第二个轮次**（切换那一轮含一次性重排，见下一条），且改动字节应显著下降；不能只凭单元测试就说「体积问题解决了」。
 - **体积改动的验收必须跨「两个稳定化轮次」，不能拿格式切换那一轮当判据**：改存储格式/切片策略后的**第一轮**会把受影响文件整体重写一遍（一次性成本），单看那一轮的重写量会把「重排」误读成「没修好」——实案 827MB → 967MB 看着更糟，其实 967 里混着全部大会话的首次重排。做法：记下基线 → 等**下一轮**（两个轮次都是新格式）→ 用 `scripts/session-churn.py` 量 → 只有「未变会话不再出现、巨会话只剩末片」才算成立；连续两轮都仍有整份巨会话重写，说明变的是**内容**（压缩改写历史等），要换更深的方案（一条消息一行 / 按内容寻址），继续调参数没用。
 - **历史体积机制（关键）**：git 仓库＝最新快照＋**每个被改文件的每一版**——同步的「强制覆盖」语义只作用于最新树（≈镜像工作区），**挡不住历史堆积**（实测：全历史 blob 2.01GB vs 最新树 0.72GB；单会话 10 个版本＝313MB）。根因＝会话导出是**超长单行 JSON**、头部元数据每轮必变 × 整包 gzip → deflate 级联 → 版本间字节重叠 **0%** → git 增量全失效 → 每轮 ~226MB 完整入库（仓库 ~0.5GB/天）。**已治理（v0.3，0.3.0）＝原样文本格式：同数据对照实测 +79.40MB/轮 → +0.01MB（整件）/ +2.25MB（分片）级；机理与三方案对照见 `references/session-storage.md`。** 单文件 95MB 同步闸由分片格式顺带拆除（分片后最大件 45MB）；体积读数用**本地对象库**实测（GitHub `size` 字段有滞后）。

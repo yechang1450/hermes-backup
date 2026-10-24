@@ -206,12 +206,39 @@ def file_layer_report(home: Path, repo: Path) -> dict:
             n += 1
         return n
 
-    # "白名单内但镜像缺失"只有在该目录确有可采集内容时才算硬伤（git 不跟踪空目录）
-    not_in_mirror = [r[0] for r in rows
-                     if r[3] == "采集" and r[0] not in mirror_top and r[0] != "sessions"
-                     and collectible_files(home / r[0]) > 0]
+    # "白名单内但镜像缺失"只有在该目录确有可采集内容时才算硬伤（git 不跟踪空目录）；
+    # 但若这些内容是本轮采集之后才出现的（mtime > 本轮 started_at），下一轮自然会采到，
+    # 和会话层的"轮内新建"同理，不算硬伤。
+    def newest_mtime(p: Path) -> float:
+        pats = tuple(_sync.EXCLUDE_PATTERNS)
+        skips = set(_sync.EXCLUDE_DIRNAMES)
+        newest = 0.0
+        items = p.rglob("*") if p.is_dir() else [p]
+        for f in items:
+            try:
+                if not f.is_file():
+                    continue
+                if any(part in skips for part in f.parts):
+                    continue
+                if any(f.match(pat) for pat in pats):
+                    continue
+                newest = max(newest, f.stat().st_mtime)
+            except OSError:
+                continue
+        return newest
+
+    cut = last_round_ts(repo)
+    missing_all = [r[0] for r in rows
+                   if r[3] == "采集" and r[0] not in mirror_top and r[0] != "sessions"
+                   and collectible_files(home / r[0]) > 0]
+    not_in_mirror, fresh_in_round = [], []
+    for name in missing_all:
+        if cut is not None and newest_mtime(home / name) > cut:
+            fresh_in_round.append(name)
+        else:
+            not_in_mirror.append(name)
     return {"rows": rows, "unclassified": unclassified, "not_in_mirror": not_in_mirror,
-            "mirror_top_count": len(mirror_top)}
+            "fresh_in_round": fresh_in_round, "mirror_top_count": len(mirror_top)}
 
 
 def main() -> int:
@@ -311,8 +338,13 @@ def main() -> int:
                 hard.append("文件层：白名单内但镜像缺失 %d 项（例 %s）"
                             % (len(fl["not_in_mirror"]), fl["not_in_mirror"][:5]))
                 print("  ⚠ 白名单内但镜像缺失：%s" % fl["not_in_mirror"][:10])
+            if fl.get("fresh_in_round"):
+                print("  · 轮内新建、下一轮会采（不计硬伤）：%s" % fl["fresh_in_round"][:10])
 
     report["hard_findings"] = hard
+    if any("多会话" in h for h in hard):
+        print("提示：镜像独有的会话（通常是外部事件删掉了活库记录，如 state.db 回滚/手工清理）"
+              "下一轮会从最新树 prune，但 git 历史仍保留；需要留档请先另存。")
     print()
     print("== 合计（%.0fs）==" % (time.time() - t0))
     print("活库 %d 会话 / %d 消息 ⇒ 镜像 %d 会话 / %d 消息" % (grand["live_s"], grand["live_m"],

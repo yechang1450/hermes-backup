@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.12
+version: 0.4.13
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -13,7 +13,7 @@ metadata:
 
 # hermes-cloud-backup — Hermes 数据云备份 / 恢复
 
-> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。
+> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。
 
 把本机 Hermes 的全部状态（配置/凭据/记忆/技能/会话/桌面端数据）**线性同步**到一个
 **私有 GitHub 仓**（默认 `hermes-backup`，唯一权威版本在 GitHub），并支持在任何新机上
@@ -109,7 +109,7 @@ metadata:
 - **跑会 import `hermes_state` 的脚本必须经 `tools/run_in_runtime.py`**：在本机终端里 `python <脚本>.py` 会被启动器以**另一个解释器**（缺 ruamel 等运行期依赖）经 runpy 重跑，报 `ModuleNotFoundError: No module named 'ruamel'`；就是 `python -c "import <模块>"` 也不能豁免（`SessionDB(...)` 构造会把进程切到工具树 python）。正确形态一律是 `python <REPO>/tools/run_in_runtime.py <脚本> [参数]`——恢复、对账、A/B 测试脚本皆同。同理：**恢复/对账不要与 `hermes update` 并发**，更新收尾持有 checkout 锁，卡住的子进程会 0% CPU 空转（判据：RSS 几 MB、CPU 0、日志停在启动横幅）。
 - **`sync.py` 的 home 只按 `LOCALAPPDATA` 解析（不读 `HERMES_HOME` 环境变量）**：`HERMES_HOME` 只影响两个包装脚本（哨兵/周期）与 hook 的路径。写单测时必须**注入 `sync.HERMES_HOME / HEALTH_FILE / ATTENTION_MARKER / RUNS_LOG`** 模块属性，否则会写进真实 `state/`（2026-10-23 实测踩过：把假失败记进了真健康文件）。
 - **推送卡在"零字节"时先看进程树，别只看网络**（0.4.9）：`subprocess` 超时只杀直接子进程，`git pack-objects` / `ssh` 这些孙子会留下来占住管道 → **之后每次重试都秒卡、零字节**（2026-10-23 实案：一轮推 10 分钟零字节、三次重试全卡，GitHub 侧只报 `Connection … closed by remote host`）。现在的 `sync.py`：①所有 git 网络操作注入 `GIT_SSH_COMMAND` 保活（ServerAliveInterval=20 / CountMax=30 / TCPKeepAlive）；②超时杀**整棵进程树**；③失败后回收本仓的**孤儿** git/ssh（只认命令行带本镜像路径或 `ssh.github.com … git-receive-pack`、且父进程已消失的）。判据三件套：`git push` 子进程存在 + `pack-objects` CPU 不涨 + ssh 读写 0 字节 ⇒ 管道死了，不是网速慢。
-- **官方 schema 会加触发器，fast-import 只摘"索引类"**（v0.22.5 实测）：库里现有 **13 个**触发器——除 display 4 个 + FTS 6 个（这 10 个由 fast-import 摘除、导入后重算/rebuild/原样恢复），还有 3 个**保持生效**：`messages_message_uid_insert`（插入时填 `message_uid`）、`messages_transcript_revision_update`（维护会话修订号）、`sessions_runtime_ledger_delete_guard`（删除护栏，与导入无关）。恢复结束会自检 `message_uid` 空值并打印 `uid 空值 0/N`；**空值 >0 ⇒ 官方改名/失效信号**，先核对官方 schema 再改 `INDEX_TRIGGERS`，别盲摘。v0.22.5 实测：21,693 条巨会话 `--fast-import` 恢复 + FTS 重建 **17.4s**、`message_uid` 全非空。
+- **官方 schema 会加触发器，fast-import 只摘"索引类"**（v0.22.5 实测）：库里现有 **13 个**触发器——除 display 4 个 + FTS 6 个（这 10 个由 fast-import 摘除、导入后重算/rebuild/原样恢复），还有 3 个**保持生效**：`messages_message_uid_insert`（插入时填 `message_uid`）、`messages_transcript_revision_update`（维护会话修订号）、`sessions_runtime_ledger_delete_guard`（删除护栏，与导入无关）。恢复结束会自检 `message_uid` 空值并打印 `uid 空值 0/N`；**空值 >0 ⇒ 官方改名/失效信号**，先核对官方 schema 再改 `INDEX_TRIGGERS`，别盲摘。**触发器总数随官方版本变**（实测 v0.22.2＝11 个＝10 索引＋uid；v0.22.5＝13 个）——脚本与验收里别写死数量，只断言「索引类 10 个可摘可原样还原」＋「uid 空值 0/N」。v0.22.5 实测：21,693 条巨会话 `--fast-import` 恢复 + FTS 重建 **17.4s**、`message_uid` 全非空。
 - **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（新机上首次同步前设置一次即可）。
 - **GitHub 单文件 100MiB 硬限**：会话导出件按会话拆分；v0.3 起原样文本存储、**>45MB 的巨会话按 45MB 切片**（`<sid>.part-NNNN.jsonl`，0.4.10 由 90MB 下调——低于 GitHub「建议 50MB」，并为硬限留 2.2 倍余量；活跃巨会话每轮只有**末片**变化，不再整份重算大 blob）。字节等价由 `scripts/test-split.py` 回归（切片+按片号拼接 == 原始行，逐字节）。
 - **历史体积机制（关键）**：git 仓库＝最新快照＋**每个被改文件的每一版**——同步的「强制覆盖」语义只作用于最新树（≈镜像工作区），**挡不住历史堆积**（实测：全历史 blob 2.01GB vs 最新树 0.72GB；单会话 10 个版本＝313MB）。根因＝会话导出是**超长单行 JSON**、头部元数据每轮必变 × 整包 gzip → deflate 级联 → 版本间字节重叠 **0%** → git 增量全失效 → 每轮 ~226MB 完整入库（仓库 ~0.5GB/天）。**已治理（v0.3，0.3.0）＝原样文本格式：同数据对照实测 +79.40MB/轮 → +0.01MB（整件）/ +2.25MB（分片）级；机理与三方案对照见 `references/session-storage.md`。** 单文件 95MB 同步闸由分片格式顺带拆除（分片后最大件 45MB）；体积读数用**本地对象库**实测（GitHub `size` 字段有滞后）。
@@ -125,7 +125,22 @@ metadata:
 - **重启网关会连坐当前对话**：`hermes gateway restart` 由收尾器在桌面端关闭后执行，不要在对话中途手动跑。
 - **后台轮的完成通知会滞后且成批到达**：通知里的命令输出可能对应**已被后续轮取代**的旧轮（失败也可能早被补推/修复）。处理前先对时——读 `state/hb-sync-runs.jsonl` 最后一行的轮次时间与 `state/hb-sync-health.json` 的 `updated_at`；旧通知若已被后继轮补齐，只记一笔、不重跑、不回滚已改配置。
 - **改在跑 cron 的包装脚本＝先实跑一次再放手**：实案 10-23 00:55 `hb-autosync.py` 因缺 `import time` 一秒即失败（`NameError: name 'time' is not defined`，且 except 分支传了未绑定的 `started` 又抛 `UnboundLocalError` 把真因盖住）——此前改脚本**没实跑**（现成回归 `scripts/test-hb-health.py` 也没跑），错误一直留到下一个 2 小时触发点才暴露。规矩：改 `hb-sentinel.py` / `hb-autosync.py` 后，先在终端 `python <HERMES_HOME>/scripts/<脚本>.py` 实跑一次（或跑 `test-hb-health.py`）看 rc，再用 `hermes cron run` 核；`bump_unfinished` 一类兜底分支里的变量必须在 `try` 之前绑定。**另一面：双脚本互备确实救场**——本轮 00:55 周期件秒失败，哨兵（2 分钟）在 44 秒后自动补跑并成功（runs.jsonl 00:56:33 一轮 committed+pushed），所以周期件坏掉不必然造成备份缺口，判「有没有丢」看 runs.jsonl 而非 cron 状态；两枚脚本别合并成一只。
+- **`runs.jsonl` 只记「进程内走到的出口」，被外部硬杀的那一轮没有行**（2026-10-24 实测）：`hb-autosync.py` 在 01:45:28 起跑、01:48:27 被网关 shutdown drain（`cron_drain_timeout=30s`）掐掉，`runs.jsonl` **没有这一行**（末行仍是 21:44 成功轮），`hb-sync-child.log` 的 mtime 停在 01:45:39。⇒ 「有没有丢」不能单看 runs.jsonl 的行数，必须三件交叉：`executions.db`（该轮 `unknown`）+ `hb-sync-child.log` mtime + 远端 HEAD 比对。上一轮遗留的未推提交照旧由下一轮补推，零丢失。
+- **网关因「检出被换版本」自停也会连坐在跑轮次**：`gateway.log` 出现 `ERROR gateway.runtime_downgrade_exit: This gateway loaded …, but its checkout is now at …, a release that predates the gateway runtime` ⇒ 有人（update/回滚）把 checkout 切到更老的版本，网关按设计自杀，在跑的 cron 被 drain 掐掉。此时排查顺序是**先让检出稳定**（`git -C hermes-agent reflog` 看切版本的时刻与来源），不要去动备份脚本。
 - **多机/线上领先**：push 被拒会自动 `pull --no-rebase` 重试一次；出现合并冲突则中止待人工（口径：线上优先、本地另存，勿 force）。
+
+## 更新 / 重启后自检（约 5 分钟；官方版本变了必跑）
+
+顺序固定，全部看完再下结论：
+
+1. `hermes --version` 确认新版本与 commit；`tail logs/update.log` 看更新是否真的收尾（是否重启过网关）。
+2. 网关：`gateway_state.json` 的 mtime 新鲜度 + `pid` + `platforms.*.state`（`weixin`/`qqbot` 应为 connected）+ 进程表里有且只有一个 `hermes_cli.main gatew*`。**`gateway_state.json` 只在 default home 一份**（多档共用一个 multiplexer）。
+3. **`ESTOP` 文件在不在**（`%LOCALAPPDATA%/hermes/ESTOP`）：`hermes pause` 跨重启保留，会让 cron 静默停摆而网关看起来一切正常；在就 `hermes resume`。
+4. cron 是否还在跳：读 `cron/executions.db` 最近几行（哨兵应每 2–3 分钟一条 `completed`），不要只信 `cron list` 的 Last Run。
+5. 同步线：锁文件在不在 + `state/hb-sync-runs.jsonl` 最后一行 + `git ls-remote` 与本地 HEAD；健康文件 `consecutive_failures`。**更新后跑满一整天再判断稳定性**——更新期间那几轮会因资源争用变慢（实测 export 1181s / git 1367s），不是机制坏了。
+6. 环境漂移：`hermes update` 会换 tools python（实测 3.14.7→3.14.9）并换出旧包——`python -c "import psutil"` 之类可选依赖要复验；`HERMES_HOME/scripts/` 里的运行副本与技能副本用 sha256 比对（更新不应覆盖，但要证）。
+7. 配置仍在：`hermes config get sessions.max_export_messages` 应为 `0`（否则巨会话导出会整包失败且 rc=0 无产物）。
+8. **恢复链路复验（最要紧）**：跑 `references/restore-drill.md` 的「低成本冒烟」两例（小档整档 + 一个巨会话），确认官方导入 API / schema 变动没有破坏恢复。
 
 ## Verification
 

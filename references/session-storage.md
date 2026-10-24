@@ -44,6 +44,43 @@
 - 比对两版字节前先想清格式：**单行巨 JSON 别做逐字节/分块平移比对**（长度微变会整体平移，「全部不同」是假象）；先 `json.loads` 做**结构级比对**（逐字段、逐消息元素）才说明问题。
 - 体积结论一律用**本地对象库**直接算；GitHub 的 `size` 字段更新有滞后，不作实时依据。
 
+## 单轮 churn 归因（「谁在把仓库撑大」的现成流程）
+
+不要靠感觉判断「这轮是不是又重写了半个库」，三步落到字节：
+
+```bash
+# 1) 这轮改了哪些 blob（含新旧 sha 与路径）
+git -C <repo> diff-tree -r --no-commit-id --raw HEAD~1 HEAD
+# 2) 按目录聚合「新增内容字节」：批量取尺寸再累加（比 git diff --stat 准）
+python - <<'EOF'
+import subprocess, collections
+out = subprocess.run(['git','-C','<repo>','diff-tree','-r','--no-commit-id','--raw','HEAD~1','HEAD'],
+                     capture_output=True, text=True).stdout
+rows = [(p[3], p[-1]) for p in (l.split() for l in out.splitlines()) if len(p) >= 5]
+shas = sorted({s for s, _ in rows if s.strip('0').strip()})
+sz = {}
+pr = subprocess.run(['git','-C','<repo>','cat-file','--batch-check=%(objectname) %(objectsize)'],
+                    input='\n'.join(shas), capture_output=True, text=True)
+for ln in pr.stdout.splitlines():
+    a, b = ln.split(); sz[a] = int(b)
+agg = collections.Counter()
+for s, path in rows:
+    agg['/'.join(path.split('/')[:2])] += sz.get(s, 0)
+for k, v in agg.most_common(10):
+    print('%-34s %8.1f MB' % (k, v / 1048576))
+EOF
+# 3) 行级分布（哪些目录文件数最多——与 2 对照看是「少量大文件」还是「大量小文件」）
+git -C <repo> diff --numstat HEAD~1 HEAD | awk '{split($3,p,"/"); d=p[1]"/"p[2]; n[d]++} END {for (k in n) print n[k], k}' | sort -rn | head
+```
+
+判读（比「仓又大了」有用得多）：
+
+- **同一会话的多个 part 同时变、而该会话并没有新消息** ⇒ 头部统计字段在变，整行字节移位，所有分片都成新 blob（见下节「尾部稳定化」）。
+- **只有末片变** ⇒ 正常追加，成本 ≈ 一个 `PART_MAX`（活跃巨会话每轮的上限）。
+- **`home-overlay/` / `profiles-overlay/` 大面积变化** ⇒ 采集层在重建（mtime/ctime 变化让 git 重哈希），不是会话数据；去查 `reset_dir` / 写入跳过是否失效。
+- **分片是按固定字节切出来的（每片恒为 `PART_MAX`）**：拿单个 part 做逐字节比对**没有意义**，要比就比拼接后的整份，或直接看 diff 里首个差异偏移。
+- 远端速率用两次 `gh api repos/<owner>/<repo> --jq .size`（KB）取差除以小时数；**`.size` 有滞后，只用来算趋势与换代 ETA，不用来判单轮成败**。
+
 ## 链路限制（GitHub 官方数字）
 
 - 推送频率：建议 ≤6 次/分钟/仓库；单次推送 **2GB 强制上限**；单文件 **100MB 强制**（建议 1MB）；仓库磁盘建议 **≤10GB**（软）。
@@ -170,7 +207,9 @@ python scripts/audit-coverage.py --repo D:/hermes-backup --home %LOCALAPPDATA%/h
 `last_activity_at`、`transcript_revision` 等**每轮都变**的统计字段。头部一改，整行字节随之偏移/不同，
 按固定字节偏移切出来的每个分片都成了新内容——git 的 delta 完全失效。
 
-**修法**：`scripts/session_layout.py` 在切片前把这些易变成员**整段剪下移到对象末尾**：
+**修法（0.4.20 起为反向白名单）**：`scripts/session_layout.py` 在切片前只把
+**身份字段**（`id/source/created_source/user_id/session_key/chat_id/chat_type/thread_id/display_name/
+origin_json/parent_session_id/started_at`）与 `messages` 留在前半段，其余顶层成员**整段剪下移到对象末尾**：
 - 零解析：字符串感知的顶层扫描（跳过字符串里的逗号/括号），不 `json.loads`（243MB 会话要 ~2GB 峰值内存）；
 - 不改内容：每个成员的字节原样保留，只改成员顺序；
 - 效果：未变会话字节完全一致（写入跳过）；有追加的会话只在**末尾**产生差异 ⇒ 只有末片变化；
@@ -178,4 +217,27 @@ python scripts/audit-coverage.py --repo D:/hermes-backup --home %LOCALAPPDATA%/h
 
 **回归**：`scripts/test-layout.py` 五项——语义等价（`json.loads` 前后相同）、幂等、易变字段确实落在尾部、
 追加一条消息后 `messages` 值前缀逐字节不变、43MB 合成会话 ~3s。
+
+### 为什么第一版（0.4.18）没管用
+第一版是**正向列举**"易变字段"（15 个统计字段）。实测立刻失效：头部还有 `last_activity_description`、
+`runtime_revision`、`handoff_state` 等**也会变但不在此列**的字段，任何一个变化都会把整行推翻。
+⇒ 改成**反向白名单**：不去猜哪些会变，只固定"身份 + 正文"必须在前，其余一律挪尾。
+
+### 实证（2026-10-24，`3a35f0` 243MB 巨会话）
+取 18:44 与 20:37 两轮的真实内容，各自按新规则稳定化后逐字节比较：
+
+| 读数 | 值 |
+|---|---|
+| 稳定化后长度 | 235,390,683 vs 235,617,762 |
+| **首个差异偏移** | **227,115,602（96.5%）** |
+| 差异内容 | 恰好是新追加的一条消息（`id 230792`）|
+
+⇒ 前 227MB 逐字节相同，只有尾部在动；下一轮起，未变会话零改动、有追加的只改末片。
+
+### 仍然存在的次要churn（未处理，属"备份什么"的政策范围）
+- `desktop-overlay/Local Storage/leveldb/**`（Chromium 本地存储，每轮 4–5MB）；
+- `home-overlay/.curator_backups/**`（技能策展快照，每轮 4–8MB）；
+- `profiles-overlay/<档>/**`（每档 30–150 个文件，每轮 0.6–2MB）。
+
+三项合计 ~15MB/轮（≈7MB/小时），与"每轮 900MB"相比属次要；是否排除属备份范围决策，未擅自改。
 

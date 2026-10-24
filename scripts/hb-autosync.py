@@ -22,8 +22,33 @@ SYNC_TIMEOUT = 3300
 CHILD_LOG = HOME / "state" / "hb-sync-child.log"
 
 
-def run_sync() -> subprocess.CompletedProcess:
-    """跑 sync.py，子进程输出**流式落盘**（超时被掐也留有阶段证据）。"""
+def _kill_tree(pid: int) -> int:
+    """杀整棵进程树（含孙子）。`subprocess.run` 超时只杀直接子进程，孙子会留成孤儿。"""
+    n = 0
+    try:
+        import psutil
+    except Exception:
+        return n
+    try:
+        kids = psutil.Process(pid).children(recursive=True)
+    except Exception:
+        kids = []
+    for c in kids:
+        try:
+            c.kill()
+            n += 1
+        except Exception:
+            pass
+    try:
+        psutil.Process(pid).kill()
+        n += 1
+    except Exception:
+        pass
+    return n
+
+
+def run_sync() -> int:
+    """跑 sync.py，子进程输出**流式落盘**（超时被掐也留有阶段证据）；超时杀整树。"""
     CHILD_LOG.parent.mkdir(parents=True, exist_ok=True)
     try:
         if CHILD_LOG.exists() and CHILD_LOG.stat().st_size > 5 * 1024 * 1024:
@@ -33,9 +58,20 @@ def run_sync() -> subprocess.CompletedProcess:
     with open(CHILD_LOG, "a", encoding="utf-8", errors="replace") as lf:
         lf.write("\n===== %s 开始 =====\n" % datetime.now().astimezone().isoformat(timespec="seconds"))
         lf.flush()
-        return subprocess.run([sys.executable, str(SYNC_SCRIPT)], stdout=lf,
-                              stderr=subprocess.STDOUT, timeout=SYNC_TIMEOUT, env=git_env(),
-                              creationflags=getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
+        proc = subprocess.Popen([sys.executable, str(SYNC_SCRIPT)], stdout=lf,
+                                stderr=subprocess.STDOUT, env=git_env(),
+                                creationflags=getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0))
+        try:
+            return proc.wait(timeout=SYNC_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            killed = _kill_tree(proc.pid)
+            try:
+                proc.wait(timeout=30)
+            except Exception:
+                pass
+            lf.write("[hb-autosync] 超时 %ss，已杀进程树 %d 个\n" % (SYNC_TIMEOUT, killed))
+            lf.flush()
+            raise
 
 
 def child_log_tail(n: int = 4000) -> str:
@@ -118,7 +154,7 @@ def main() -> int:
         pass
     started = time.time()
     try:
-        p = run_sync()
+        rc = run_sync()
     except subprocess.TimeoutExpired:
         bump_unfinished(started, "timeout %ss" % SYNC_TIMEOUT)
         print("[hb-autosync] 同步超时（%ss）——子进程已终止；阶段日志尾：\n%s"
@@ -129,9 +165,9 @@ def main() -> int:
         print("[hb-autosync] 同步异常：%r" % e, flush=True)
         return 1
     tail = child_log_tail()
-    if p.returncode == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
+    if rc == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
         return 0
-    print("[hb-autosync] 同步失败 rc=%s\n%s" % (p.returncode, tail[-800:]), flush=True)
+    print("[hb-autosync] 同步失败 rc=%s\n%s" % (rc, tail[-800:]), flush=True)
     return 1
 
 

@@ -101,3 +101,25 @@ python scripts/test-hb-health.py       # 健康记账单一来源 + 未跑完补
 **实测**：手动带保活重推同一提交 → 压缩后 112MiB、**3.32 MiB/s**、2 分钟推完（`20c8fd92..c99f15c0`）。
 超时路径单测：`sync.git(... timeout=0.05)` → 抛"超时（已杀进程树 2 个，回收孤儿 0 个）"，事后零残留。
 
+## 导出超时留下的孤儿导出（0.4.15，2026-10-24 实案）
+
+**现象**：连续两轮 `sync` 都撞 3300s 硬超时（exit=1，`runs.jsonl` 无新行，health `consecutive_failures` 递增）；
+`hb-sync-child.log` 停在 `tools 镜像: 10 件`，之后再无 `export …` 行。
+
+**取证**：
+- `psutil` 找到一个 `python -I -c "import os, sys, runpy…"` 进程，**父进程已死**、RSS 1.6GB、持有 `profiles/ceo/state.db`；
+- 镜像里 `sessions/ceo/*` 的 mtime 停在一天前，其它档有零散新写入 ⇒ 两个导出进程在写同一批文件；
+- 该档 DB 本身没问题（`SELECT COUNT(*)` 0.09s、最大消息 0.4MB）。
+
+**根因**：`subprocess.run(..., timeout=2000)` 超时只杀直接子进程（启动器），真正的导出进程留成孤儿；
+下一轮接管锁后又起一个导出，两个同时写镜像 → 互相拖死，直到外层 3300s 再掐一次，再留一个孤儿。
+
+**修法（0.4.15）**：
+1. 导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()`（psutil 递归）杀整树；
+2. 每轮 `acquire_lock()` 后调用 `_reap_orphan_exporters()`，只回收父进程已消失的导出进程；
+   识别条件四件套（python ＋ `hermes-cloud-backup` ＋ `export_all_profiles.py` ＋ `--home`/`--out`），
+   避免误杀"命令行里只是提到文件名"的进程；
+3. `hb-autosync.py` 改 Popen + `wait(timeout)`，超时同样杀整树，并在 child log 落一行"已杀进程树 N 个"。
+
+**回归**：`scripts/test-reap-exporters.py` 三场景（孤儿被杀 / 父进程健在不动 / 只提文件名不杀）。
+

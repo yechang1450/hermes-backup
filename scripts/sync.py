@@ -604,12 +604,24 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         shutil.rmtree(rawdir, ignore_errors=True)
         t0 = time.time()
         try:
-            bp = subprocess.run([sys.executable, str(runner), str(helper),
-                                 "--home", str(HERMES_HOME), "--out", str(rawdir)],
-                                capture_output=True, text=True, timeout=2000)  # 导出阶段预算 33 分钟
+            bp = subprocess.Popen([sys.executable, str(runner), str(helper),
+                                   "--home", str(HERMES_HOME), "--out", str(rawdir)],
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            try:
+                out, err = bp.communicate(timeout=2000)   # 导出阶段预算 33 分钟
+            except subprocess.TimeoutExpired:
+                # subprocess.run 的超时只杀直接子进程（run_in_runtime 启动器），真正的导出进程
+                # 会活下来占住镜像与各档 state.db —— 下一轮再起一个，两个导出同时写同一批文件
+                # （2026-10-24 实案：连续两轮 3300s 超时，孤儿持 ceo/state.db、RSS 1.6GB）。
+                killed = _kill_tree(bp)
+                try:
+                    bp.communicate(timeout=15)
+                except Exception:
+                    pass
+                raise RuntimeError(f"export_timeout（批量导出超过 2000s 预算；已杀进程树 {killed} 个）")
             if bp.returncode != 0:
                 bulk_ok = False
-                log(f"批量导出失败 rc={bp.returncode}：{(bp.stdout or bp.stderr or '').strip()[-300:]}")
+                log(f"批量导出失败 rc={bp.returncode}：{(out or err or '').strip()[-300:]}")
         except subprocess.TimeoutExpired:
             raise RuntimeError("export_timeout（批量导出超过 2000s 预算）")
         except Exception as e:
@@ -754,6 +766,45 @@ def _kill_tree(proc: subprocess.Popen) -> int:
             killed += 1
         except Exception:
             pass
+    return killed
+
+
+def _reap_orphan_exporters() -> list[int]:
+    """回收**父进程已消失**的批量导出进程（超时只杀直接子进程留下的孙子）。
+
+    识别条件（全部满足才算，避免误杀"命令行里只是提到文件名"的进程）：
+    ① python 解释器；② 命令行含 ``hermes-cloud-backup`` 与 ``export_all_profiles.py``；
+    ③ 带 ``--home`` 与 ``--out``（真实调用形态）；④ 父进程已不存在。
+    导出会写镜像与读各档 state.db，留着它＝下一轮两个导出进程同时写同一批文件
+    （2026-10-24 实案：连续两轮 3300s 超时）。
+    """
+    killed: list[int] = []
+    try:
+        import psutil
+    except Exception:
+        return killed
+    me = os.getpid()
+    try:
+        procs = list(psutil.process_iter(["pid", "ppid", "name", "cmdline"]))
+    except Exception:
+        return killed
+    for p in procs:
+        try:
+            if (p.info["name"] or "").lower() not in ("python.exe", "python"):
+                continue
+            cl = " ".join(p.info["cmdline"] or [])
+            if not ("export_all_profiles.py" in cl and "hermes-cloud-backup" in cl
+                    and "--home" in cl and "--out" in cl):
+                continue
+            if p.info["pid"] == me:
+                continue
+            ppid = p.info["ppid"]
+            if ppid and psutil.pid_exists(ppid):
+                continue
+            p.kill()
+            killed.append(int(p.info["pid"]))
+        except Exception:
+            continue
     return killed
 
 
@@ -955,6 +1006,10 @@ def main() -> int:
 
     if not acquire_lock():
         return 0
+
+    _orphan_exports = _reap_orphan_exporters()
+    if _orphan_exports:
+        log(f"回收孤儿导出进程：{_orphan_exports}（父进程已消失，避免与本轮同时写镜像）")
 
     t0 = time.time()
     MIRROR = resolve_mirror(args.mirror)

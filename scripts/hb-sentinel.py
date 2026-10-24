@@ -37,6 +37,7 @@ SYNC_SCRIPT = HOME / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
 
 QUIET_SECONDS = 300          # ② 静默阈值：5 分钟（按全库最后一条消息计时）
 LONG_QUIET_SECONDS = 3600    # ④ 长静默阈值：1 小时
+OVERDUE_SECONDS = 150 * 60   # ⑤ 超期兜底：>2.5 小时没有成功轮 ⇒ 补一轮（周期 cron 漂移/漏跑时）
 MIN_SYNC_GAP = 20 * 60       # 距上次实际同步 ≥20 分钟才允许再触发
 SYNC_TIMEOUT = 3300          # 同步单轮上限（cron 脚本超时默认 3600）
 
@@ -284,6 +285,11 @@ def main() -> int:
             if not fresh and not sync_running:
                 trigger = "quiet-5min"
                 st["synced_this_quiet"] = True
+
+    # ⑤ 超期兜底：周期 cron 因重启/漂移错过时（2026-10-25 实案：重启把 05:57 顺延到 06:29），
+    # 只要超过 2.5 小时没有成功轮且当下没在同步，就补一轮。
+    if not trigger and not sync_running and not fresh and age is not None and age >= OVERDUE_SECONDS:
+        trigger = "overdue"
 
     ok = True
     if trigger:

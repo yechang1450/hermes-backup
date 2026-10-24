@@ -144,6 +144,22 @@ def main() -> int:
                     st.get("last_trigger_ok") is False and st.get("synced_this_quiet") is False)
 
     print()
+    print("== S8 超期兜底 ⑤（>2.5h 无成功轮、当下不忙）→ 触发 overdue ==")
+    h, m = make_home("s8", msg_age=60); set_last_sync(m, 3 * 3600)
+    (h / "state" / "hb-sentinel-state.json").write_text(
+        json.dumps({"gw_start": "A", "synced_this_quiet": True}), encoding="utf-8")
+    p, st, spawned = run(h, m)
+    ok_all &= check("触发 overdue", st.get("last_trigger_tag") == "overdue" and spawned,
+                    f"tag={st.get('last_trigger_tag')}")
+
+    print("== S9 刚同步过（<20 分钟）→ 不触发 ==")
+    h, m = make_home("s9", msg_age=60); set_last_sync(m, 600)
+    (h / "state" / "hb-sentinel-state.json").write_text(
+        json.dumps({"gw_start": "A", "synced_this_quiet": True}), encoding="utf-8")
+    p, st, spawned = run(h, m)
+    ok_all &= check("不触发", st.get("last_trigger_tag") is None and not spawned,
+                    f"tag={st.get('last_trigger_tag')}")
+
     print("== 总判定：%s ==" % ("PASS" if ok_all else "FAIL"))
     return 0 if ok_all else 1
 

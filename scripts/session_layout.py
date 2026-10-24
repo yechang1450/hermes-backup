@@ -21,7 +21,16 @@ git 的 delta 因此失效，仓体积按 ~150MB/小时增长，三天两头要�
 """
 from __future__ import annotations
 
-# 每轮都可能变、且不属于会话正文的顶层字段（顺序即移至尾部的顺序）
+# 反向白名单：**只有**这些字段留在前半段（身份 + 正文），其余全部挪到文件尾部。
+# 理由：头部任何一个会变的字段（`last_activity_description` / `runtime_revision` / token 计数 …）
+# 都会把整行字节推翻；正向列"易变字段"永远会漏（2026-10-24 第一次实现就漏了 4 个）。
+KEEP_KEYS = (
+    "id", "source", "created_source", "user_id", "session_key", "chat_id",
+    "chat_type", "thread_id", "display_name", "origin_json",
+    "parent_session_id", "started_at", "messages",
+)
+
+# 兼容旧接口：列出的都是"应挪到尾部"的字段（现在不再逐个列举，保留常量仅为文档参考）
 VOLATILE_KEYS = (
     "message_count",
     "api_call_count",
@@ -130,14 +139,25 @@ def top_level_members(text: str) -> list[tuple[str, int, int]]:
             raise ValueError("对象未闭合")
 
 
-def stabilize(text: str, keys: tuple[str, ...] = VOLATILE_KEYS) -> str:
-    """把 keys 里的顶层成员移到对象末尾，其余成员保持原顺序与原字节。"""
+def stabilize(text: str, keys: tuple[str, ...] | None = None) -> str:
+    """只保留 KEEP_KEYS 在前半段，其余顶层成员按原样移到对象末尾（字节不变、只改顺序）。
+
+    传 ``keys`` 时退化为"把这些 key 移到尾部"（旧行为，测试用）。
+    """
     members = top_level_members(text)
-    keyset = set(keys)
-    moved = [m for m in members if m[0] in keyset]
+    if keys is None:
+        keyset = None
+        keepset = set(KEEP_KEYS)
+        def _is_moved(k: str) -> bool:
+            return k not in keepset
+    else:
+        keyset = set(keys)
+        def _is_moved(k: str) -> bool:
+            return k in keyset
+    moved = [m for m in members if _is_moved(m[0])]
     if not moved:
         return text
-    keep = [m for m in members if m[0] not in keyset]
+    keep = [m for m in members if not _is_moved(m[0])]
 
     def _chunk(m: tuple[str, int, int]) -> str:
         raw = text[m[1]:m[2]]

@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from session_layout import stabilize, top_level_members  # noqa: E402
+from session_layout import KEEP_KEYS, stabilize, top_level_members  # noqa: E402
 
 fails = 0
 

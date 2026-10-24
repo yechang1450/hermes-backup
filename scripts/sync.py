@@ -151,6 +151,7 @@ def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: s
     GIT_NAME = owner
     GIT_EMAIL = f"{owner}@users.noreply.github.com" if owner else ""
 
+PUSH_TIMEOUT = 1500                     # 推送预算：一次性大重排（如首次启用尾部稳定化）实测 900s 不够（2026-10-24 23:04 轮）
 SIZE_GUARD_FILE = 95 * 1024 * 1024      # 单文件上限
 STABILIZE_MIN_BYTES = 5 * 1024 * 1024   # 只对「大会话」做尾部稳定化：小文件整份重写无所谓，
                                         # 但大会话每轮整份重写会拖垮 git 增量（见 session_layout.py）
@@ -979,7 +980,7 @@ def commit_and_push(message: str, no_push: bool) -> dict:
     attempts = 3
     last_err = ""
     for attempt in range(1, attempts + 1):
-        p = git("push", "-u", "origin", "main", check=False, timeout=900)
+        p = git("push", "-u", "origin", "main", check=False, timeout=PUSH_TIMEOUT)
         if p.returncode == 0:
             break
         last_err = (p.stderr or p.stdout).strip()

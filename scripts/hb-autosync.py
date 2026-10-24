@@ -18,7 +18,7 @@ LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" /
 HOME = Path(os.environ.get("HERMES_HOME") or (LOCALAPPDATA / "hermes"))
 SYNC_SCRIPT = HOME / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
 MIN_SYNC_GAP = 20 * 60
-SYNC_TIMEOUT = 3300
+SYNC_TIMEOUT = 3900   # 外层兜底：collect+export+commit 最坏 ~1900s，推送预算 1500s
 CHILD_LOG = HOME / "state" / "hb-sync-child.log"
 
 

@@ -205,6 +205,8 @@ def main() -> int:
                     help="不放宽官方导入尺寸上限（默认放宽；恢复完整历史所需）")
     ap.add_argument("--fast-import", action="store_true",
                     help="导入提速：导入期摘除 display 与 FTS 索引触发器，导入后官方重算/重建（大型历史约 2–4 倍速）")
+    ap.add_argument("--allow-empty", action="store_true",
+                    help="源目录里没有会话文件时也按成功退出（默认判失败）")
     ap.add_argument("--verify", action="store_true",
                     help="导入后逐会话比对消息条数与镜像一致（只比本轮真正导入的会话；不一致则退出码 3）")
     args = ap.parse_args()
@@ -240,14 +242,21 @@ def main() -> int:
         print(f"已放宽导入上限（进程内）: {len(relaxed)} 项")
 
     total = {"imported": 0, "skipped": 0, "failed": 0, "verify_failed": 0}
+    empty_sources: list[str] = []
     for prof in profiles:
         src = src_root / prof
         if not src.is_dir():
             print(f"[{prof}] 源目录不存在: {src}")
+            empty_sources.append(prof)
             continue
         db_path = home / ("state.db" if prof == "main" else f"profiles/{prof}/state.db")
         db_path.parent.mkdir(parents=True, exist_ok=True)
         groups = group_sessions(src)
+        if not groups:
+            # 指错目录时不该"安静成功"：0 个会话等于什么都没恢复（2026-10-26 实测踩到）
+            print(f"[{prof}] 源目录里没有会话文件: {src}")
+            empty_sources.append(prof)
+            continue
         files = sorted(groups.items(),
                        key=lambda kv: sum(p.stat().st_size for p in kv[1]))  # 小档优先：进度可见、大档最后
         print(f"[{prof}] 目标库: {db_path} | 会话: {len(files)} 个")
@@ -335,6 +344,10 @@ def main() -> int:
                 pass
     print(f"== 完成: imported={total['imported']}  skipped(已存在)={total['skipped']}  "
           f"failed={total['failed']}  verify_failed={total['verify_failed']} ==")
+    if empty_sources and not args.allow_empty:
+        print(f"!! {len(empty_sources)} 个档没有任何会话文件（{empty_sources}）——"
+              f"请检查 --source / --profile 是否指对；确属预期请加 --allow-empty")
+        return 2
     return 0 if total["failed"] == 0 and total["verify_failed"] == 0 else 3
 
 

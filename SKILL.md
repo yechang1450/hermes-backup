@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.51
+version: 0.4.52
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -139,6 +139,11 @@ metadata:
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
   （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
   且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
+- **私有性检查默认 fail-closed**（0.4.52，2026-10-26）：原实现遇到「属主解析不到 / gh 不可用 / 查询失败」一律**跳过检查照推**，
+  而实测有 3 轮就是这样推上去的（日志 `!! 未解析到仓库属主，跳过私有检查`）。这个仓装着凭据与私人对话，检查没做成就不该推——
+  现在改为**拒绝推送**，确需在无法验证的环境里推要显式加 `--allow-unverified-privacy`。
+- **远程 URL 解析要容忍端口**（0.4.52）：`ssh://git@ssh.github.com:443/owner/repo.git`（备用通道）原正则把 `:443` 当 owner 段、解析失败，
+  于是属主为空 → 私有性检查被跳过。正则已加 `(?::\d+)?`；实测 5 种 URL 形态（ssh+端口/ssh/https/.git 有无）全部解析正确。
 - **文档引用的文件必须在仓里**（0.4.50）：`scripts/check-parts.py`、`scripts/verify_drill.py`、`references/restore-drill.md`
   三个文件此前只在本地、**从未发布**——按 SKILL.md 执行会直接「文件不存在」。已随本版发布（check-parts 实跑镜像：`PARTS-OK`）。
 - **入口脚本的 `--help` 不得触发真动作**（0.4.50）：`hb-sentinel.py` / `hb-autosync.py` 原来没有参数解析，

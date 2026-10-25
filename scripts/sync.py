@@ -118,7 +118,9 @@ def resolve_mirror(cli_value: str) -> Path:
 
 
 def _parse_slug(url: str) -> str:
-    m = re.search(r"github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", url.strip())
+    # 必须容忍端口：`ssh://git@ssh.github.com:443/owner/repo.git` 是常用备用通道，
+    # 原正则把 ":443" 当成 owner 段，直接解析失败（2026-10-26 实测：属主为空 → 私有性检查被跳过）。
+    m = re.search(r"github\.com(?::\d+)?[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", url.strip())
     return f"{m.group(1)}/{m.group(2)}" if m else ""
 
 
@@ -556,24 +558,36 @@ def sync_tools(report: dict) -> None:
     log(f"tools 镜像: {n} 件（tools/ + SKILL.md + RESTORE.md）")
 
 
-def ensure_private(report: dict) -> bool:
-    """推送前私有性检查：gh 可用时验证；非私有则尝试改回；改不回来则拒绝推送。"""
+def ensure_private(report: dict, allow_unverified: bool = False) -> bool:
+    """推送前私有性检查：非私有则尝试改回，改不回来就拒绝推送。
+
+    **默认 fail-closed**（2026-10-26 改）：属主解析不到 / gh 不可用 / 查询失败时一律**拒绝推送**，
+    而不是"跳过检查照推"——这个仓里有凭据和私人对话，检查没做成就不该推。
+    确需在无法验证的环境里推，显式传 `--allow-unverified-privacy`。
+    """
     gh = shutil.which("gh")
     slug = f"{GH_OWNER}/{GH_REPO}"
+    def _unverifiable(why: str) -> bool:
+        if allow_unverified:
+            report["private_check"] = f"{why}（已按 --allow-unverified-privacy 显式放行）"
+            log("!! " + report["private_check"])
+            return True
+        report["private_check"] = f"{why} —— 拒绝推送（可用 --allow-unverified-privacy 放行）"
+        log("!! " + report["private_check"])
+        return False
+
     if not GH_OWNER:
-        report["private_check"] = "未解析到仓库属主，跳过私有检查（务必人工确保仓库私有！）"
-        log("!! " + report["private_check"])
-        return True
+        return _unverifiable("未解析到仓库属主，无法验证私有性")
     if not gh:
-        report["private_check"] = "gh 不可用，跳过检查（务必人工确保仓库私有！）"
-        log("!! " + report["private_check"])
-        return True
+        return _unverifiable("gh 不可用，无法验证私有性")
     p = subprocess.run([gh, "api", f"repos/{slug}", "--jq", ".private"],
                        capture_output=True, text=True)
     if p.returncode != 0:
-        report["private_check"] = f"检查失败，跳过：{(p.stderr or '').strip()[:120]}"
-        log("!! " + report["private_check"])
-        return True
+        time.sleep(2)
+        p = subprocess.run([gh, "api", f"repos/{slug}", "--jq", ".private"],
+                           capture_output=True, text=True)
+    if p.returncode != 0:
+        return _unverifiable(f"私有性查询失败：{(p.stderr or '').strip()[:120]}")
     if p.stdout.strip().lower() == "true":
         report["private_check"] = "已确认私有"
         return True
@@ -1169,6 +1183,8 @@ def main() -> int:
                     help="仓库名（默认取技能目录 local.json 的 repo；都没有则 hermes-backup。"
                          "镜像已有 origin 时一律以 origin 为准——换代只需改 origin/local.json）")
     ap.add_argument("--remote", default="", help="显式指定 remote URL")
+    ap.add_argument("--allow-unverified-privacy", action="store_true",
+                    help="无法验证仓库私有性时仍然推送（默认拒绝）")
     ap.add_argument("--create-remote", action="store_true",
                     help="远端不存在时用 gh 创建私有仓")
     args = ap.parse_args()
@@ -1245,7 +1261,7 @@ def main() -> int:
 
     if not args.no_push:
         _maybe_create_remote(args.create_remote)
-        if not ensure_private(report):
+        if not ensure_private(report, allow_unverified=args.allow_unverified_privacy):
             write_meta(report, t0)
             append_run(report, t0, 4)
             return 4

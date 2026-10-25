@@ -20,7 +20,8 @@ import sync  # noqa: E402
 
 import psutil  # noqa: E402
 
-FAKE = "C:/Users/yecha/AppData/Local/hermes/skills/hermes-cloud-backup/scripts/export_all_profiles.py"
+# 只要求「以 export_all_profiles.py 结尾」的 argv 尾；用脚本自身目录拼，避免把用户名/绝对路径写进公开仓
+FAKE = str(Path(__file__).resolve().parent / "export_all_profiles.py")
 SLEEPER = "import time; time.sleep(120)"
 
 

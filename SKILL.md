@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.43
+version: 0.4.44
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -77,7 +77,8 @@ metadata:
 - `scripts/test-kanban-scope.py` — kanban 采集范围回归（5 项：只备 boards 板库 / 不备工作区 db / 顶层 kanban.db / 走快照 API / **prune 之后板库仍在**）
 - `scripts/check-parts.py` — 镜像分片形态体检（P1 编号连续 / P2 除末片外每片正好 PART_MAX / P3 末片合规 / P4 无形态混用；`PARTS-FAIL` 退出码 1）。改切片代码后用它验收「数据是否真的归位」
 - `scripts/audit-coverage.py` — 覆盖率审计：①会话层（镜像会话文件 vs 活库 state.db 逐会话条数）②文件层（`--with-files`：HERMES_HOME 顶层条目 vs 采集白名单，列出未分类/漏备项）；判据＝硬伤退出码 1
-- `scripts/rotate-generation.sh` — 数据仓换代（孤儿快照单提交种子 → 新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑）
+- `scripts/rotate-generation.sh` — 数据仓换代（**分批种子**推到新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑；分批逻辑在 `seed_generation.sh`）
+- `scripts/seed_generation.sh` — 换代种子（临时 index 逐批 `add -f → write-tree → commit-tree → push`，每批 ≤800MB，绕开单次 push 2GB 上限；可单独对本地裸库自测；校验只认 `refs/heads/main`）
 - `references/generations.md` — 数据仓「换代」归档预案（体积到阈值时换新代仓、旧仓冻结为只读档案；不重写历史）
 - `templates/RESTORE.md` — 新机恢复手册（编号步骤 + 验收清单）
 - `references/session-storage.md` — 会话存储格式与历史体积机制（v0.3 原样文本格式、实测方法、GitHub 链路限制）
@@ -206,4 +207,4 @@ metadata:
 - **验收以「最后同步时刻」为界**：快照之后的新会话/改动不在备份里（属预期，下轮同步带上）。对账做三向差集——真机∩快照（应精确一致）、真机−快照（＝同步后新建）、快照−真机（＝曾删除；快照保留历史）；给用户解释时先讲这层边界，避免把预期差异当故障。
 - **时间锚点**：报「损失窗口/新鲜度」前先实测当前时间（`date`）并按当下重算——隔夜或隔数轮后旧读数的时间锚（如「今晚」）即失效，禁止沿用旧时点表述。
 - **沙箱演示/验收**：在 `temp` 下克隆＋恢复（`--home` 指向沙箱），全程不动真机；大件会话（>6MB）可先改名加 `.hold` 后缀暂缓，中小件先跑完出对账，再恢复原名单独补入（总量不变）。
-- **恢复侧验收＝至少两遍独立全量演练、均 0 差异**（第二遍必须换仓状态＋换工具来源，不可省；配方、对账口径与判读坑 → `references/restore-drill.md`）。
+- **恢复侧验收三步**：①**冷启动冒烟**（全新 `--depth 1` 克隆 ＋ 仓内自带工具恢复一档 ＋ 直读 sqlite 独立核对，约 15 分钟——专抓「本机热环境永远暴露不了」的文档路径错，适合派子代理做）②③两遍独立全量演练、均 0 差异（第二遍必须换仓状态＋换工具来源，不可省）。配方、对账口径与判读坑 → `references/restore-drill.md`。

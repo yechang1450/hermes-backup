@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.44
+version: 0.4.45
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -13,7 +13,7 @@ metadata:
 
 # hermes-cloud-backup — Hermes 数据云备份 / 恢复
 
-> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/main:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。
+> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/main:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。⑧**公开仓零本机痕迹**：脚本/测试里不得出现 `C:/Users/<名>` 这类绝对路径（既泄露用户名，又让测试换机即败）——一律按 `Path(__file__).resolve().parent` 拼；发布前用 `grep -rn "C:/Users/" scripts/` 扫一遍。
 
 把本机 Hermes 的全部状态（配置/凭据/记忆/技能/会话/桌面端数据）**线性同步**到一个
 **私有 GitHub 仓**（默认 `hermes-backup`，唯一权威版本在 GitHub），并支持在任何新机上
@@ -84,6 +84,7 @@ metadata:
 - `references/session-storage.md` — 会话存储格式与历史体积机制（v0.3 原样文本格式、实测方法、GitHub 链路限制）
 - `references/auto-sync.md` — 自动同步（watchdog 四机制）判定、静默信号源与实施顺序
 - `references/restore-drill.md` — 恢复侧验收演练配方（两遍独立演练标准、逐会话对账口径、判读坑）
+- `references/audit-playbook.md` — **自查手册**：四路审计（文档↔代码漂移 / 全新克隆下逐个脚本可跑性 / 代码级静默失败审查 / 公开面卫生）+ 误报判读与收尾
 
 ## 流程 A：日常同步（源机）
 
@@ -200,7 +201,7 @@ metadata:
 - **每轮结构化记录**：`$HERMES_HOME/state/hb-sync-runs.jsonl` 一行一轮（时长／分段耗时 collect·export·git／退出码／committed·pushed／字节数）——追轮次历史、算成功率与分段成本先读它；连续失败计数在 `state/hb-sync-health.json`，≥3 轮失败写 `state/hb-sync-needs-attention` 标记（不推送、不打扰，成功一轮自动清）。
 - 恢复后：置顶对话在；微信/QQ 发消息能续接旧线程；群聊记录在；各档 `hermes -p <档> sessions stats` 数量与备份一致；主档出词正常（provider 可用）。
 - 全量验收入口：`templates/RESTORE.md` 第 6 节清单。
-- **全量审计（大改后或定期）**：四路核对（维护笔记③）＋版本字符串全扫（如 `grep -rn '0\.3\.' <技能目录>`，捕捉状态行/示例漂移）＋点火一轮真同步核 `git ls-remote` 前进；线上设置与隐私面 → `github-security-audit` 技能。
+- **全量审计（大改后或定期）**：四路核对（维护笔记③）＋版本字符串全扫（如 `grep -rn '0\.3\.' <技能目录>`，捕捉状态行/示例漂移）＋点火一轮真同步核 `git ls-remote` 前进；线上设置与隐私面 → `github-security-audit` 技能。四路自查的完整清单（含每条的 grep 与判据）→ `references/audit-playbook.md`。
 - **完整性＝两条腿，缺一条都不算数**：①**演练**（镜像 → 沙箱，证明"能恢复"）②**覆盖率审计**（活库 → 镜像，证明"备的是全部"）。审计默认只审会话层；**要连文件层（`--with-files`）一起跑**才算覆盖配置/记忆/技能/平台数据那一半。判据一句话：缺会话／多会话／镜像条数超前／以解析失败＝**硬伤**（退出码 1），**落后＝正常增量**，孤立消息组＝活库自身残留不计。
 - **审计的两类"非硬伤"要会读，别急着当漏备**：①**文件层轮内新建豁免**（0.4.13）——白名单目录/文件在镜像缺失，但源内容 mtime 晚于本轮 `started_at` 时，判「轮内新建、下一轮会采」，输出在 `· 轮内新建…` 一行、不计硬伤（实案：`desktop/interrupted_turns.json` 由桌面端在轮后写入，被误判为漏备）；②**镜像独有会话**（审计报「多会话」）——通常是活库被外部事件换过（state.db 回滚/还原、手工清理），不是漏备也不是采集错：下一轮会从最新树 prune，**git 历史仍保留**；要留档先另存文件（含分片），要导回用 `git show <sha>:sessions/main/<sid>.jsonl` 取出后走 `--source` 导入。看到「多会话」先问「活库最近是否被回滚过」，别从活库删东西。
 - **审计 PASS 必须与负向对照成对出现**：改了审计器或采集白名单后跑 `scripts/test-audit-coverage.py`（8 场景合成夹具，断言"该红的会红"）。只有 PASS 没有负向对照＝**没有证据**（审计可能根本没在看）；断言要落在输出字段（`缺 N`／`新建豁免 N`／`超前 N`），只断言退出码会把"因别的原因失败"误当通过。

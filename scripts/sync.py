@@ -773,8 +773,8 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
                     pass
                 raise RuntimeError(f"export_timeout（批量导出超过 2000s 预算；已杀进程树 {killed} 个）")
             if bp.returncode != 0:
-                bulk_ok = False
-                log(f"批量导出失败 rc={bp.returncode}：{(out or err or '').strip()[-300:]}")
+                # 部分档失败不代表全批作废：下面按「缺哪些文件」决定是否回退，缺的档再走 CLI。
+                log(f"批量导出部分失败 rc={bp.returncode}：{(out or err or '').strip()[-300:]}")
         except subprocess.TimeoutExpired:
             raise RuntimeError("export_timeout（批量导出超过 2000s 预算）")
         except Exception as e:
@@ -795,10 +795,20 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
                 return
 
     # ── 路径 B（回退）：逐档 hermes CLI（v3.2 行为，原样保留）──
+    # 批量导出若部分成功，这里**只对缺失档**跑 CLI，已产出的直接复用（否则一次单档失败会重导全部档）。
+    bulk_raw = {n: rawdir / f"{n}.jsonl" for n in wanted
+                if (rawdir / f"{n}.jsonl").is_file() and (rawdir / f"{n}.jsonl").stat().st_size > 0}
+
     def do_one(name: str, profile: str | None) -> None:
         raw = SCRATCH / f"{name}.jsonl"
         if raw.exists():
             raw.unlink()
+        reuse = bulk_raw.get(name)
+        if reuse is not None:
+            shutil.copy2(reuse, raw)
+            log(f"export {name}: 复用批量导出件（{reuse.stat().st_size/1048576:.1f}MB），跳过 CLI")
+            add_entry(name, raw, {"via": "bulk-reuse"})
+            return
         cmd = [exe] + (["-p", profile] if profile else []) + \
               ["sessions", "export", "--format", "jsonl", str(raw)]
         t0 = time.time()

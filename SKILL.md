@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.52
+version: 0.4.53
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -139,6 +139,8 @@ metadata:
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
   （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
   且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
+- **批量导出部分失败不再整批作废**（0.4.53）：`export_all_profiles` 任一档报错会让 rc=1，原实现直接把整批判失败、
+  回退成「逐档 CLI 全量重导」（实测一次单档失败要多花 ~10 分钟）；现在按**缺哪些文件**判定，已产出的档直接复用（`bulk-reuse`），只对缺失档跑 CLI。
 - **私有性检查默认 fail-closed**（0.4.52，2026-10-26）：原实现遇到「属主解析不到 / gh 不可用 / 查询失败」一律**跳过检查照推**，
   而实测有 3 轮就是这样推上去的（日志 `!! 未解析到仓库属主，跳过私有检查`）。这个仓装着凭据与私人对话，检查没做成就不该推——
   现在改为**拒绝推送**，确需在无法验证的环境里推要显式加 `--allow-unverified-privacy`。

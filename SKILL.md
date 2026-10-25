@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.46
+version: 0.4.47
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -139,6 +139,12 @@ metadata:
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
   （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
   且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
+- **路由表按 session_key 去重**（0.4.47）：`gateway_routing` 里同一 key 可能在多个 scope（历史 HERMES_HOME 路径）下各有一行，
+  原样导出会让恢复端按「目标机 scope」逐行 INSERT 撞 UNIQUE —— 实测本机 50 行 / 40 key，`apply_routing.py` **直接失败**（事务回滚、零写入）。
+  现在 `dump_routing()` 去重（优先本机 scope、其次最新 `updated_at`，report 里 `routing_rows_raw` 记原始行数），
+  `apply_routing.py` 再加 `ON CONFLICT(scope, session_key) DO UPDATE` 兜底 + `--dry-run`（实测 new=40、幂等复跑 unchanged=40）。
+- **模块级 `MIRROR` 也要走解析链**（0.4.47）：`import sync` 后直接调 `dump_routing()`/`sync_tools()` 而不经 `main()` 时，
+  旧默认值是 `~/hermes-backup` —— 实测把 supplement 写进了 `C:\Users\<user>\hermes-backup`。现在模块级默认值同样按 env → local.json → `D:/hermes-backup` → `~/hermes-backup` 解析。
 - **校验远程状态要用具体 ref，不要用 `HEAD`**（0.4.35）：`git ls-remote <本地路径> HEAD` 在本地传输下返回空，
   曾把「5 批全部推送成功」误判成失败（exit 1）。一律取 `refs/heads/main`（必要处加重试）。
 - **容量判据只看 `gh api … --jq .size`**：`churn-report.py` 是「新增 blob 字节」，不是仓体积增长（整份重写的文件 git 仍会 delta）。实测同一时段 churn 130–155MB/轮，而远端只涨 ≈14MB/小时。

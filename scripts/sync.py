@@ -76,7 +76,10 @@ SKILL_DIR = HERMES_HOME / "skills" / "hermes-cloud-backup"
 SCRATCH = HERMES_HOME / "cache" / "scratch" / "hb-exports"
 
 # 下列由 main() 的 resolve_identity() 解析（--mirror / --owner / --remote 可覆盖）
-MIRROR = Path(os.environ.get("HERMES_BACKUP_MIRROR") or (Path.home() / "hermes-backup"))
+# 模块级默认值也走同一条解析链（env > local.json > D:/hermes-backup > ~/hermes-backup）。
+# 否则「import sync 后直接调 dump_routing()/sync_tools() 等」会落到 ~/hermes-backup ——
+# 2026-10-26 实测：手工调用把 supplement 写进了 C:\Users\<user>\hermes-backup。
+MIRROR = Path(os.environ.get("HERMES_BACKUP_MIRROR") or (Path("D:/hermes-backup") if Path("D:/hermes-backup").exists() else Path.home() / "hermes-backup"))
 GH_OWNER = ""
 GH_REPO = "hermes-backup"
 REMOTE_URL = ""
@@ -803,18 +806,35 @@ def dump_routing(report: dict) -> None:
             "SELECT scope, session_key, entry_json, updated_at FROM gateway_routing"))
     finally:
         con.close()
+    # 同一个 session_key 可能在多个 scope 下各有一行（历史 HERMES_HOME 路径的残留）。
+    # 恢复侧按「目标机 scope」写回，若原样导出会变成同 key 多行 -> INSERT 撞 UNIQUE。
+    # 这里按 session_key 去重：优先本机 scope 的那行，其次 updated_at 最新的那行。
+    cur_scope = str(HERMES_HOME / "sessions")
+    best: dict[str, tuple] = {}
+    for sc, key, ej, up in rows:
+        r = {"scope": sc, "session_key": key, "entry_json": ej, "updated_at": up}
+        old_row = best.get(key)
+        if old_row is None:
+            best[key] = r
+            continue
+        old_is_local = old_row["scope"] == cur_scope
+        new_is_local = sc == cur_scope
+        if new_is_local and not old_is_local:
+            best[key] = r
+        elif new_is_local == old_is_local and str(up or "") >= str(old_row["updated_at"] or ""):
+            best[key] = r
+    uniq = sorted(best.values(), key=lambda x: x["session_key"])
     data = {
-        "note": "state.db 的 gateway_routing 表原样导出（微信/QQ 等平台线程 -> 会话映射）。"
+        "note": "state.db 的 gateway_routing 表导出（微信/QQ 等平台线程 -> 会话映射），"
+                "已按 session_key 去重（同 key 多 scope 时优先本机 scope）。"
                 "恢复：用 tools/apply_routing.py 写回（需 Hermes 停止）。",
         "exported_at": datetime.now().astimezone().isoformat(),
-        "rows": [
-            {"scope": r[0], "session_key": r[1], "entry_json": r[2], "updated_at": r[3]}
-            for r in rows
-        ],
+        "rows": uniq,
     }
     (out_dir / "gateway_routing.json").write_text(
         json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    report["routing_rows"] = len(rows)
+    report["routing_rows"] = len(uniq)
+    report["routing_rows_raw"] = len(rows)
 
 
 # ---------- 安全闸 ----------

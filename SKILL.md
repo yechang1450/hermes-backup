@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.63
+version: 0.4.64
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -129,7 +129,7 @@ metadata:
 
 ## Pitfalls
 
-**56 条实战坑全文在 [`references/pitfalls.md`](references/pitfalls.md)**（按主题分组：会话与分片 / 导出与采集 / git 与推送 / 恢复与迁移 / 哨兵与自愈 / 其它）。排查先看那一份，这里只留最常咬人的几条：
+**62 条实战坑全文在 [`references/pitfalls.md`](references/pitfalls.md)**（按主题分组：会话与分片 / 导出与采集 / git 与推送 / 恢复与迁移 / 哨兵与自愈 / 其它）。排查先看那一份，这里只留最常咬人的几条：
 
 - **会话是「一行=一个会话」**：头部统计字段每轮都变 ⇒ 必须靠 `session_layout` 的**尾部稳定化**（反向白名单）＋**固定偏移**分片（12MB，边界不得随总长浮动），否则每轮重写整批分片。
 - **整档删除必须显式授权**：某档导出失败/零产出时**绝不能**把 `sessions/<档>` 清空再推；`prune_stale(..., allow_delete=…)` 只删「活库确认已不存在」的档。

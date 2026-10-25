@@ -26,13 +26,22 @@ DEFAULT_REPO = "D:/hermes-backup"
 
 
 def git(repo: str, *args: str) -> str:
-    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True).stdout
+    """跑 git 并把失败当失败：原来只取 stdout，`--repo` 写错/`--range` 不存在都会"0.0MB 假绿"，
+    容量判据会被误读成"没增长"（2026-10-26 修）。"""
+    p = subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True)
+    if p.returncode != 0:
+        raise SystemExit(f"git {' '.join(args)} 失败（rc={p.returncode}）：{(p.stderr or '').strip()[:300]}")
+    return p.stdout
 
 
 def _raw_pairs(repo: str, a: str, b: str) -> list[tuple[str, str]]:
     """返回 [(new_blob_sha, path)]；用 `-z` 避免带空格路径被引号/空格切断。"""
-    out = subprocess.run(["git", "-C", repo, "diff-tree", "-r", "--no-commit-id", "--raw", "-z", a, b],
-                         capture_output=True, text=True).stdout
+    p = subprocess.run(["git", "-C", repo, "diff-tree", "-r", "--no-commit-id", "--raw", "-z", a, b],
+                       capture_output=True, text=True)
+    if p.returncode != 0:
+        raise SystemExit(f"git diff-tree 失败（rc={p.returncode}）：{(p.stderr or '').strip()[:300]}"
+                         f"（检查 --range {a} {b} 是否存在）")
+    out = p.stdout
     tokens = out.split("\0")
     pairs: list[tuple[str, str]] = []
     i = 0

@@ -266,6 +266,7 @@ def main() -> int:
     report: dict = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "profiles": {}}
     hard: list[str] = []
     warns: list[str] = []
+    skipped: list[str] = []
     grand = {"live_s": 0, "live_m": 0, "mirror_s": 0, "mirror_m": 0, "ahead_msgs": 0, "behind_msgs": 0}
 
     for prof in profiles:
@@ -273,6 +274,7 @@ def main() -> int:
         mdir = src_root / prof
         if not db.is_file():
             print("[%s] 跳过：活库不存在 %s" % (prof, db))
+            skipped.append(prof)
             continue
         lc, l_sessions, orphans = live_counts(db)
         mc, bad = mirror_counts(mdir)
@@ -367,6 +369,11 @@ def main() -> int:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
         print("明细已写：%s" % out)
+    if skipped:
+        # 档名拼错/库缺失时，原来会"跳过并 PASS"——对门禁是假绿（2026-10-26 修）
+        print(f"!! {len(skipped)} 个档因活库缺失被跳过：{skipped}（检查 --profile 是否拼错）")
+        print("AUDIT-SKIPPED")
+        return 2
     print("AUDIT-%s" % ("PASS" if not hard else "FAIL"))
     return 0 if not hard else 1
 

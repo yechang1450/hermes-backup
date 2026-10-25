@@ -53,6 +53,11 @@ PY
 
 PREV=""
 N=0
+# 确定性：提交时间取镜像最后一次提交的时间，消息里不带时间戳 ⇒ 同样的输入重跑会得到同样的 commit sha，
+# 于是「重跑」= no-op（原来是每次新 sha，重跑必 non-fast-forward，与 docstring 的"幂等续跑"不符）。
+SRC_DATE="$(git -C "$MIRROR" log -1 --format=%cI 2>/dev/null || true)"
+[ -n "$SRC_DATE" ] || SRC_DATE="2000-01-01T00:00:00+00:00"
+export GIT_AUTHOR_DATE="$SRC_DATE" GIT_COMMITTER_DATE="$SRC_DATE"
 for BF in "$BATCHDIR"/batch-*.txt; do
   N=$((N + 1))
   if [ -z "$PREV" ]; then GIT_INDEX_FILE="$IDX" git -C "$MIRROR" read-tree --empty; fi
@@ -61,13 +66,23 @@ for BF in "$BATCHDIR"/batch-*.txt; do
 GIT_INDEX_FILE="$IDX" git -C "$MIRROR" add -f --pathspec-from-file="$BF"
   T=$(GIT_INDEX_FILE="$IDX" git -C "$MIRROR" write-tree)
   if [ -z "$PREV" ]; then
-    C=$(git -C "$MIRROR" commit-tree "$T" -m "gen snapshot $(date '+%F %T') [batch $N]")
+    C=$(git -C "$MIRROR" commit-tree "$T" -m "gen snapshot [batch $N]")
   else
     C=$(git -C "$MIRROR" commit-tree "$T" -p "$PREV" -m "seed batch $N")
   fi
   T0=$(date +%s)
-  git -C "$MIRROR" push -q "$URL" "$C:refs/heads/main"
-  echo "  批 $N：推送 $(($(date +%s) - T0))s，提交 $C"
+  if ! git -C "$MIRROR" push -q "$URL" "$C:refs/heads/main" 2>"$BATCHDIR/push-$N.err"; then
+    R_SHA=$(git -C "$MIRROR" ls-remote "$URL" refs/heads/main 2>/dev/null | cut -f1)
+    R_TREE=$(git -C "$MIRROR" rev-parse "$R_SHA^{tree}" 2>/dev/null || true)
+    if [ -n "$R_SHA" ] && [ "$R_TREE" = "$T" ]; then
+      echo "  批 $N：远端已是同一棵树（重跑 no-op）"
+    else
+      echo "!! 批 $N 推送失败：$(head -2 "$BATCHDIR/push-$N.err")"
+      exit 1
+    fi
+  else
+    echo "  批 $N：推送 $(($(date +%s) - T0))s，提交 $C"
+  fi
   PREV="$C"
 done
 [ -n "$PREV" ] || { echo "!! 没有任何批次"; exit 1; }

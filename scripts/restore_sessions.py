@@ -77,8 +77,26 @@ def group_sessions(src: Path) -> dict[str, list[Path]]:
 
 
 def load_session(files: list[Path]) -> dict:
-    """单件/分片/旧 gz 皆可：分片按文件名序拼接后整体解析（与原样存储逐字节一致）。"""
+    """单件/分片/旧 gz 皆可：分片按文件名序拼接后整体解析（与原样存储逐字节一致）。
+
+    分片必须 **1..N 连续**：缺片时拼出来是坏 JSON，原来会被报成「读取失败」掩盖真因；
+    这里先校验编号，缺片直接说清缺哪几片（2026-10-26 加）。
+    """
     files = sorted(files, key=lambda p: p.name)
+    parts = [p for p in files if ".part-" in p.name]
+    if parts:
+        nums = []
+        for p in parts:
+            try:
+                nums.append(int(p.name.split(".part-", 1)[1].split(".", 1)[0]))
+            except (ValueError, IndexError):
+                raise ValueError(f"分片名不合规: {p.name}")
+        nums_sorted = sorted(nums)
+        missing = [n for n in range(1, nums_sorted[-1] + 1) if n not in set(nums_sorted)]
+        if missing:
+            raise ValueError(f"缺分片 {missing}（现有 {len(nums_sorted)} 片，最大编号 {nums_sorted[-1]}）")
+        if len(set(nums)) != len(nums):
+            raise ValueError("分片编号重复")
     data = b""
     for p in files:
         if p.name.endswith(".gz"):
@@ -299,14 +317,24 @@ def main() -> int:
                     print(f"   !! {sid} 被拒: {res.get('errors')}")
             if args.fast_import:
                 t0 = time.time()
-                healed = _rebuild_display(db, touched)
+                healed = filled = 0
+                fts_s = 0.0
                 try:
-                    db.close()
-                except Exception:
-                    pass
-                filled = _fill_invisible_orders(db_path)
-                fts_s = _rebuild_fts(db_path)
-                _restore_display_triggers(db_path, suppressed)
+                    healed = _rebuild_display(db, touched)
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+                    filled = _fill_invisible_orders(db_path)
+                    fts_s = _rebuild_fts(db_path)
+                finally:
+                    # 触发器摘了必须还原：重建中途抛错（库被占用等）若不还原，
+                    # 该库此后所有消息都不再进 display/FTS 索引，且没人会知道（2026-10-26 修）。
+                    try:
+                        _restore_display_triggers(db_path, suppressed)
+                    except Exception as exc:
+                        total["failed"] += 1
+                        print(f"   !! [{prof}] 触发器还原失败：{exc!r}（该库需重跑恢复）")
                 uid_total, uid_nulls = _check_uid_nulls(db_path)
                 uid_note = ("uid 空值 0/%d" % uid_total) if uid_total >= 0 and uid_nulls == 0 else (
                     "uid 空值 %d/%d ⚠" % (uid_nulls, uid_total) if uid_total >= 0 else "uid 检查跳过")

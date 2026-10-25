@@ -261,15 +261,48 @@ def acquire_lock() -> bool:
             return False
         else:
             log(f"发现陈旧锁（{int(age)}s > {LOCK_STALE_SECONDS}s），接管")
-    LOCK_FILE.write_text(
-        json.dumps({"pid": os.getpid(),
-                    "started": datetime.now().astimezone().isoformat()}),
-        encoding="utf-8")
+    # 原子建锁：check-then-write 有 TOCTOU —— 两个触发源可能同时通过上面的检查。
+    # O_EXCL 让"写入"本身成为判定：只有一个能建成。
+    payload = json.dumps({"pid": os.getpid(),
+                          "started": datetime.now().astimezone().isoformat()})
+    try:
+        fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        # 抢输了：若是刚才判定为死的锁，尝试清掉再抢一次；否则让路。
+        try:
+            holder = int(json.loads(LOCK_FILE.read_text(encoding="utf-8")).get("pid") or 0)
+        except Exception:
+            holder = 0
+        if holder and not _pid_alive(holder):
+            try:
+                LOCK_FILE.unlink()
+            except OSError:
+                pass
+            try:
+                fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            except FileExistsError:
+                log("建锁竞争失败（另一路已抢先）——本轮退出，让路")
+                return False
+        else:
+            log("建锁竞争失败（另一路持有活锁）——本轮退出，让路")
+            return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(payload)
     atexit.register(release_lock)
     return True
 
 
 def release_lock() -> None:
+    """只删**自己那把锁**：接管场景下（A 死后 B 接管），A 的退出钩子不能把 B 的锁删掉，
+    否则第三个进程会以为无人持锁而并发进来。"""
+    try:
+        data = json.loads(LOCK_FILE.read_text(encoding="utf-8"))
+        if int(data.get("pid") or 0) != os.getpid():
+            return
+    except FileNotFoundError:
+        return
+    except Exception:
+        return                    # 读不懂就不动（可能是别人的格式/半截文件）
     try:
         LOCK_FILE.unlink(missing_ok=True)
     except OSError:
@@ -1228,6 +1261,10 @@ def main() -> int:
     resolve_identity(MIRROR, args.owner, args.repo_name, args.remote)
     log(f"解析：mirror={MIRROR} owner={GH_OWNER or '(未解析)'} "
         f"remote={REMOTE_URL or '(未解析)'}")
+    if MIRROR.exists() and not MIRROR.is_dir():
+        # 此时 report 还没建：只打可读错误并退出，别引用未定义变量（2026-10-26 自查踩到 UnboundLocalError）
+        log(f"!! --mirror 指向的是文件而不是目录：{MIRROR}")
+        return 2
     MIRROR.mkdir(parents=True, exist_ok=True)
     (MIRROR / "logs").mkdir(parents=True, exist_ok=True)
     report: dict = {
@@ -1247,9 +1284,13 @@ def main() -> int:
     t_ph = time.time()
     try:
         export_sessions(report, args.skip_exports)
-    except RuntimeError as e:
-        log(f"!! 导出阶段失败：{e}")
-        report["aborted"] = str(e)
+    except (RuntimeError, subprocess.TimeoutExpired, OSError, sqlite3.Error) as e:
+        # 2026-10-26：原来只 catch RuntimeError —— 逐档 CLI 的 `subprocess.run(timeout=900)` 抛的是
+        # TimeoutExpired，会直接 traceback 退出，**不写 runs.jsonl / health / meta**（连续失败计数永不增长，
+        # needs-attention 永不触发）。这里统一按失败记账，并在报告里标明异常类型。
+        msg = f"{type(e).__name__}: {e}" if not isinstance(e, RuntimeError) else str(e)
+        log(f"!! 导出阶段失败：{msg}")
+        report["aborted"] = msg
         write_meta(report, t0)
         append_run(report, t0, 2)
         return 2
@@ -1261,7 +1302,12 @@ def main() -> int:
         write_meta(report, t0)
         append_run(report, t0, 2)
         return 2
-    dump_routing(report)
+    try:
+        dump_routing(report)
+    except Exception as e:
+        # 采集（覆盖层/看板/工具）已经写过镜像了，这一步失败不该整轮回滚，但必须记账并可见。
+        log(f"!! 路由表导出失败（继续其余阶段）：{type(e).__name__}: {e}")
+        report["routing_error"] = f"{type(e).__name__}: {e}"
 
     big, total = size_audit()
     report["size_total_bytes"] = total

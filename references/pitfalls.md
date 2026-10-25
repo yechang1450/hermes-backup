@@ -172,3 +172,19 @@
 - **桌面端 Local Storage 被占用**：群聊/置顶数据只有桌面端退出后才能安全覆盖 → 收尾器处理。
 
 - **后台轮的完成通知会滞后且成批到达**：通知里的命令输出可能对应**已被后续轮取代**的旧轮（失败也可能早被补推/修复）。处理前先对时——读 `state/hb-sync-runs.jsonl` 最后一行的轮次时间与 `state/hb-sync-health.json` 的 `updated_at`；旧通知若已被后继轮补齐，只记一笔、不重跑、不回滚已改配置。
+
+## 运行环境与并发（2026-10-26 增补）
+
+- **子代理会把 `HERMES_HOME`/`TEMP` 泄漏到共享 shell**：Hermes 终端是共享快照，子代理 `export` 的环境变量会留在里面。
+  实测：某子代理把 `HERMES_HOME` 指到它的沙箱后，后续 `audit-coverage.py --profile X` 对着**假 home** 跑、报「跳过」并 rc=2；
+  `TEMP=/tmp` 还会让 Node 的临时目录解析错位。收工/换手前先 `echo $HERMES_HOME` 核对；一切写操作都用**显式 `--home`**。
+- **锁要原子建、且只删自己的**（0.4.64）：`exists()` 再 `write_text()` 是 check-then-write，两个触发源可能同时通过检查；
+  且退出钩子若不校验 pid，会把"接管者"的锁删掉 → 双写者同时 add/commit。现在 `acquire_lock` 用 `O_CREAT|O_EXCL`，
+  `release_lock` 只在锁内 pid == 自己时才删。
+- **导出阶段的超时要记账**（0.4.64）：逐档 CLI 的 `subprocess.run(timeout=900)` 抛 `TimeoutExpired`，原来 main 只 catch `RuntimeError`
+  ⇒ traceback 直接退出、**不写 runs.jsonl / health / meta**（连续失败计数永不增长、告警永不触发）。现在一并按失败记账。
+- **分片必须 1..N 连续**（0.4.64）：缺片时拼出来是坏 JSON，会被报成「读取失败」掩盖真因；`load_session` 现在先校验编号，
+  直接说「缺分片 [2]」。
+- **fast-import 的触发器还原要放 `finally`**（0.4.64）：重建过程中途抛错（库被占用很常见）会让 display/FTS 触发器永久缺失，
+  之后所有消息都不再进索引且没人知道。
+

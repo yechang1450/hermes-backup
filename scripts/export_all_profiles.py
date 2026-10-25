@@ -39,6 +39,9 @@ def main() -> int:
     ap.add_argument("--out", required=True, help="输出目录（每档一个 .jsonl）")
     a = ap.parse_args()
     home = Path(a.home)
+    if not (home / "state.db").is_file():
+        print(f"[bulk-export] HERMES_HOME 无效（缺 state.db）：{home}")
+        return 2
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     jobs = [("main", home / "state.db")]

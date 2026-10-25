@@ -19,6 +19,7 @@ FROM=""
 TO=""
 DRY=0
 SKIP_ARCHIVE=0
+KEEP_MIRROR=0
 BATCH_MB=800        # 分批推送的每批上限（MB）；set -u 下必须先给默认值
 
 while [ $# -gt 0 ]; do
@@ -30,7 +31,8 @@ while [ $# -gt 0 ]; do
     --batch-mb) BATCH_MB="$2"; shift 2;;
     --dry-run) DRY=1; shift;;
     --skip-archive) SKIP_ARCHIVE=1; shift;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0;;
+    --keep-mirror-branch) KEEP_MIRROR=1; shift;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0;;
     *) echo "未知参数：$1"; exit 2;;
   esac
 done
@@ -79,7 +81,7 @@ if [ $DRY = 1 ]; then
   echo "  3) gh repo create $OWNER/$TO --private（不存在时）"
   echo "  4) 分批判 push → $TO:main（每批一推，避开单次 2GB 上限）"
   echo "  5) 浅克隆抽查（文件数 / 会话可解析）"
-  echo "  6) 切换：branch refs/$FROM-archive / update main / origin=$TO / push / 写 local.json 的 repo"
+  echo "  6) 切换：branch refs/$FROM-archive（--keep-mirror-branch 可跳过）/ update main / origin=$TO / push / 写 local.json 的 repo"
   echo "  7) $([ $SKIP_ARCHIVE = 1 ] && echo '跳过归档' || echo "gh api -X PATCH repos/$OWNER/$FROM -f archived=true")"
   echo "ROTATE-DRYRUN-OK"
   exit 0
@@ -124,7 +126,11 @@ fi
 rm -rf "$TMP"
 
 echo "[6] 切换镜像到新代"
-git -C "$MIRROR" branch -f "$FROM-archive" main
+if [ "$KEEP_MIRROR" = 1 ]; then
+  echo "  跳过本地 $FROM-archive 分支（--keep-mirror-branch）"
+else
+  git -C "$MIRROR" branch -f "$FROM-archive" main
+fi
 git -C "$MIRROR" update-ref refs/heads/main "$C"
 git -C "$MIRROR" remote set-url origin "$URL"
 echo "  origin -> $URL"

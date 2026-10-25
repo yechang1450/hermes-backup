@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -23,14 +24,41 @@ def sample(path: Path) -> dict:
     return json.loads(path.read_bytes())
 
 
+def synthetic_sample() -> tuple[str, str]:
+    """没有镜像时的自足样本：造一个"一行=一个会话"的 JSON，含易变统计字段与 2 万条消息。
+
+    2026-10-26 改：原来硬编码 D:/hermes-backup，换台机器就 IndexError、整套回归跑不了。
+    """
+    msgs = [{"role": "user" if i % 2 else "assistant",
+             "content": f"第 {i} 条消息，用于撑大样本，内容重复但 id 不同。",
+             "id": f"m{i}"} for i in range(20000)]
+    obj = {
+        "id": "synthetic0001", "source": "cli", "user_id": "u", "session_key": "k",
+        "message_count": len(msgs), "input_tokens": 123, "output_tokens": 456,
+        "timings": {"total": 1.5}, "transcript_revision": 7,
+        "last_activity_description": "synthetic",
+        "messages": msgs,
+    }
+    return json.dumps(obj, ensure_ascii=False), "synthetic0001(合成)"
+
+
 def main() -> int:
-    src = Path(r"D:/hermes-backup/sessions/main")
-    # 取一个真实的小会话（<2MB，单文件）
-    cand = sorted((p for p in src.glob("*.jsonl") if p.stat().st_size < 2 * 1024 * 1024),
-                  key=lambda p: p.stat().st_size)[-1]
-    raw = cand.read_bytes().decode("utf-8").rstrip("\n")
+    # 可用 HB_TEST_MIRROR 指向别处；拿不到真实样本就退回合成样本（保持自足）
+    src = Path(os.environ.get("HB_TEST_MIRROR") or r"D:/hermes-backup/sessions/main")
+    cand = None
+    if src.is_dir():
+        pool = sorted((p for p in src.glob("*.jsonl") if p.stat().st_size < 2 * 1024 * 1024),
+                      key=lambda p: p.stat().st_size)
+        if pool:
+            cand = pool[-1]
+    if cand is not None:
+        raw = cand.read_bytes().decode("utf-8").rstrip("\n")
+        name = cand.name
+    else:
+        raw, name = synthetic_sample()
+        print("（未找到 D:/hermes-backup 镜像，使用合成样本——本测试自足，不依赖本机备份）")
     obj = json.loads(raw)
-    print(f"样本 {cand.name}  {len(raw)/1048576:.2f}MB  顶层键 {len(obj)} 个")
+    print(f"样本 {name}  {len(raw)/1048576:.2f}MB  顶层键 {len(obj)} 个")
 
     out = stabilize(raw)
     check("S1 语义等价 json.loads(out) == json.loads(in)", json.loads(out) == obj)

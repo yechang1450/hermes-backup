@@ -59,14 +59,24 @@ def _alive(pid: int) -> bool:
         return False
 
 
+def _wait_find(pred, timeout: float = 6.0):
+    """轮询等进程可见：固定 sleep(1) 在负载高时会假红（实测 8 次里 1 次 find=[]）。"""
+    end = time.time() + timeout
+    while time.time() < end:
+        got = _find(pred)
+        if got:
+            return got
+        time.sleep(0.2)
+    return []
+
+
 def main() -> int:
     fails = 0
 
     # S1：孤儿
     _spawn_orphan_maker([FAKE, "--home", "X", "--out", "Y"])
-    time.sleep(1)
-    orphans = _find(lambda p, cl: "hermes-cloud-backup" in cl and "--home" in cl and "--out" in cl
-                    and not psutil.pid_exists(p.info["ppid"]))
+    orphans = _wait_find(lambda p, cl: "hermes-cloud-backup" in cl and "--home" in cl and "--out" in cl
+                         and not psutil.pid_exists(p.info["ppid"]))
     killed = sync._reap_orphan_exporters()
     # 刚 kill 的进程可能还没落气：给最多 5 秒
     deadline = time.time() + 5
@@ -78,7 +88,7 @@ def main() -> int:
 
     # S2：父进程健在
     live = _spawn([FAKE, "--home", "X", "--out", "Y"])
-    time.sleep(1)
+    _wait_find(lambda p, cl: p.pid == live.pid)
     sync._reap_orphan_exporters()
     ok2 = _alive(live.pid)
     print(("PASS" if ok2 else "FAIL") + f"  S2 父进程健在者不动：pid={live.pid} alive={ok2}")
@@ -90,9 +100,8 @@ def main() -> int:
 
     # S3：孤儿但命令行不含 --home/--out（只是提到文件名）
     _spawn_orphan_maker([FAKE])
-    time.sleep(1)
-    fake = _find(lambda p, cl: "export_all_profiles.py" in cl and "--home" not in cl
-                 and not psutil.pid_exists(p.info["ppid"]))
+    fake = _wait_find(lambda p, cl: "export_all_profiles.py" in cl and "--home" not in cl
+                      and not psutil.pid_exists(p.info["ppid"]))
     sync._reap_orphan_exporters()
     ok3 = bool(fake) and all(_alive(pid) for pid in fake)
     print(("PASS" if ok3 else "FAIL") + f"  S3 只提文件名者不杀：find={fake}")

@@ -89,28 +89,18 @@ echo "[1] 压缩本地对象（gc）"
 git -C "$MIRROR" gc --quiet || echo "  gc 告警（继续）"
 git -C "$MIRROR" count-objects -vH | grep -E '^(count|size-pack):' || true
 
-echo "[2] 造孤儿快照提交"
-TREE=$(git -C "$MIRROR" write-tree)
-C=$(git -C "$MIRROR" commit-tree "$TREE" -m "gen snapshot $(date '+%F %T') — 上一代完整历史存档于 $OWNER/$FROM（archived）")
-echo "  snapshot=$C tree=$TREE"
-
 URL="ssh://git@ssh.github.com:443/$OWNER/$TO.git"
-echo "[3] 建新代私有仓 $OWNER/$TO"
+echo "[2] 建新代私有仓 $OWNER/$TO"
 gh repo create "$OWNER/$TO" --private 2>&1 || echo "  （已存在或创建告警，继续）"
 
-echo "[4] 推送快照"
-git -C "$MIRROR" remote remove rotatetmp 2>/dev/null || true
-git -C "$MIRROR" remote add rotatetmp "$URL"
-HEAD_NEW=$(git -C "$MIRROR" ls-remote rotatetmp HEAD | cut -c1-40 || true)
-if [ "$HEAD_NEW" = "$C" ]; then
-  echo "  远端已有同一快照（$C），跳过推送"
-else
-  T0=$(date +%s)
-  git -C "$MIRROR" push -u rotatetmp "$C:refs/heads/main"
-  echo "  推送耗时 $(($(date +%s)-T0))s"
-fi
-R2=$(git -C "$MIRROR" ls-remote rotatetmp HEAD | cut -c1-40)
-[ "$R2" = "$C" ] || { echo "!! 远端 HEAD($R2) != 快照($C)"; exit 1; }
+# ---------- [3] 分批推送（seed_generation.sh） ----------
+# 不再"单提交整树一次推"：GitHub 单次 push 上限 2GB，树到 3–12GB 时必然撞限。
+# 分批逻辑在 seed_generation.sh（可单独跑、可对本地裸库测），每批 ≤ BATCH_MB，推完校验树一致。
+echo "[3] 分批推送（每批 ≤ ${BATCH_MB}MB）"
+SEED_OUT=$(bash "$HERE/seed_generation.sh" "$MIRROR" "$URL" "${BATCH_MB:-800}")
+echo "$SEED_OUT" | grep -v '^SEED-OK' || true
+C=$(echo "$SEED_OUT" | sed -n 's/^SEED-OK //p' | tail -1)
+[ -n "$C" ] || { echo "!! 未拿到种子提交（见上面输出）"; exit 1; }
 echo "  ✓ 远端 HEAD=$C"
 
 echo "[5] 浅克隆抽查"
@@ -133,7 +123,6 @@ echo "[6] 切换镜像到新代"
 git -C "$MIRROR" branch -f "$FROM-archive" main
 git -C "$MIRROR" update-ref refs/heads/main "$C"
 git -C "$MIRROR" remote set-url origin "$URL"
-git -C "$MIRROR" remote remove rotatetmp
 echo "  origin -> $URL"
 git -C "$MIRROR" push -q -u origin main && echo "  ✓ 切换后推送正常"
 python - "$HERE/local.json" "$TO" <<'PY'

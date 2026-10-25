@@ -20,11 +20,24 @@
 
 ## 1. 克隆备份仓
 
+**两种克隆方式，按需要选：**
+
+```bash
+# A) 全量（要恢复全部档、全部文件时用；仓可能到 10GB 级）
+git clone <备份仓地址> D:\hermes-backup
+
+# B) 只要某几档的会话时：部分克隆 + 稀疏检出（实测只要 sessions/main 时 1.9GB，全量 3.3GB）
+git clone --filter=blob:none --no-checkout <备份仓地址> D:\hermes-backup
+cd D:\hermes-backup
+git sparse-checkout init --cone
+git sparse-checkout set sessions/main tools templates      # 需要哪档就写哪档
+git checkout
 ```
-git clone <备份仓地址> D:\hermes-backup        # 例如 git@github.com:<owner>/hermes-backup.git
-```
+> B 的收益只在"只要一部分"时成立；要恢复全部档就用 A，别折腾稀疏。
+> 两者都可续跑：网络中断后在同目录 `git checkout` 或 `git fetch` 接着来。
+
 （克隆目录任意；下文以 `D:\hermes-backup` 为例。）
-完成标准：`D:\hermes-backup\home-overlay\`、`profiles-overlay\`、`sessions\`、`tools\` 在位。
+完成标准：`D:\hermes-backup\home-overlay\`、`profiles-overlay\`、`sessions\`、`tools\` 在位（B 方式下只保证你 set 的那些路径）。
 
 ## 2. 恢复文件层（配置/凭据/记忆/技能/cron/看板 + 各 bot 档）
 

@@ -157,7 +157,6 @@ STABILIZE_MIN_BYTES = 5 * 1024 * 1024   # 只对「大会话」做尾部稳定�
                                         # 但大会话每轮整份重写会拖垮 git 增量（见 session_layout.py）
 SIZE_GUARD_TOTAL = 4096 * 1024 * 1024   # 镜像总量上限（v3 会话不压缩，基数更大）
 PART_MAX = 12 * 1024 * 1024             # 会话分片阈值（0.4.26 由 45MB 下调）。
-TAIL_MAX = 3 * 1024 * 1024              # 末片上限（0.4.31）：活跃会话每轮只重写末片 ⇒ 直接决定每轮 churn。
                                         # 尾部稳定化后，每轮只有"变动的那个分片"重写 ⇒ 阈值越小、单轮重写越少
                                         # （实测 45MB 时稳态 249MB/轮，其中 208MB 全是 10 个活动会话的末片）。
                                         # 12MB 距 GitHub 单文件 100MB 硬限留 8 倍余量，仍远低于「建议 50MB」。
@@ -615,29 +614,6 @@ def stabilize_line(raw: bytes) -> bytes:
     return raw if out == text else out.encode("utf-8")
 
 
-def part_slices(total: int, part_max: int, tail_max: int) -> list[tuple[int, int]]:
-    """切片偏移表：历史部分按 part_max 切，**最后一片不超过 tail_max**。
-
-    动机（2026-10-25 实测）：会话是「一行=一个整会话」，活跃会话每轮都在尾部追加，
-    切分必须保证尾部那片够小——否则一次追加就要重写整个 12MB 末片。实测每轮 137MB 里
-    有 90MB 是 8 个活跃巨会话的 12MB 末片；把末片压到 3MB 后约降到 1/4。
-    约束：所有片首尾相接、无空隙无重叠（由 test-split.py 的字节等价断言把关）。
-    """
-    if total <= part_max:
-        return [(0, total)]
-    out: list[tuple[int, int]] = []
-    pos = 0
-    while total - pos > part_max + tail_max:
-        out.append((pos, pos + part_max))
-        pos += part_max
-    remain = total - pos
-    if remain > tail_max:                     # 再切一片，让最后一刀正好落在 tail_max
-        out.append((pos, pos + remain - tail_max))
-        pos += remain - tail_max
-    out.append((pos, total))
-    return out
-
-
 def split_to_session_parts(raw: Path, outdir: Path) -> dict:
     """把「一行=一个会话」的 jsonl 原样拆成每会话 .jsonl（>90MB 切 .part-NNNN.jsonl 分片）。
 
@@ -662,8 +638,8 @@ def split_to_session_parts(raw: Path, outdir: Path) -> dict:
             if len(ln) <= PART_MAX:
                 outs = [(outdir / f"{sid}.jsonl", ln)]
             else:
-                outs = [(outdir / f"{sid}.part-{i + 1:04d}.jsonl", ln[a:b])
-                        for i, (a, b) in enumerate(part_slices(len(ln), PART_MAX, TAIL_MAX))]
+                outs = [(outdir / f"{sid}.part-{k // PART_MAX + 1:04d}.jsonl", ln[k:k + PART_MAX])
+                        for k in range(0, len(ln), PART_MAX)]
             for path, blob in outs:
                 size = len(blob)
                 same = False

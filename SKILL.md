@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.32
+version: 0.4.33
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -86,7 +86,8 @@ metadata:
 1. 在 `terminal` 里跑 `python <SKILL>/scripts/sync.py`（后台跑也可以；其日志在 `<镜像>/logs/`）。
    完成标准：末尾出现 `sync 完成：… committed=… pushed=True`，且 `git ls-remote` 与本地 HEAD 一致。
 2. 铁规：**永不 force-push**；推送前脚本自检仓库私有性（gh 可用时；非私有会尝试改回、失败即中止推送）。
-3. 节流建议：每日 ≤1–2 次或按需。**v0.3 存储格式已落地（0.3.0）**：会话原样存文本、**>12MB 自动分片**（0.4.26），每轮入历史的是「真实新增 ＋ 变动分片」而不是整份文件。**但别把它读成「体积无顾虑」**：容量仍随内容增长与末片重写上升，必须按 `references/generations.md` 的「容量巡检」定期量 `churn-report.py` 与远端 `.size`，到 4.5GB 前换代——2026-10-24 就是因为把这句当成「已解决」而漏看了 150MB/小时的暴涨。
+3. 节流建议：每日 ≤1–2 次或按需。**v0.3 存储格式已落地（0.3.0）**：会话原样存文本、**>12MB 自动分片**（0.4.26），每轮入历史的是「真实新增 ＋ 变动分片」而不是整份文件。**但别把它读成「体积无顾虑」**：容量仍随内容增长与末片重写上升，必须按 `references/generations.md` 的「容量巡检」定期量 `churn-report.py` 与远端 `.size`，到 12GB 前换代（2026-10-25 由 4.5GB 上调，依据见 `references/generations.md`）——2026-10-24 就是因为把这句当成「已解决」而漏看了 150MB/小时的暴涨。
+**另外记住：`churn-report.py` 量的是「新增 blob 字节」，不是仓体积增长**（git 会对整份重写的文件做 delta）；判容量一律看 `gh api … --jq .size`。
 
 ## 自动同步（可选；走官方 cron 的纯脚本任务）
 
@@ -128,8 +129,13 @@ metadata:
 - **推送卡在"零字节"时先看进程树，别只看网络**（0.4.9）：`subprocess` 超时只杀直接子进程，`git pack-objects` / `ssh` 这些孙子会留下来占住管道 → **之后每次重试都秒卡、零字节**（2026-10-23 实案：一轮推 10 分钟零字节、三次重试全卡，GitHub 侧只报 `Connection … closed by remote host`）。现在的 `sync.py`：①所有 git 网络操作注入 `GIT_SSH_COMMAND` 保活（ServerAliveInterval=20 / CountMax=30 / TCPKeepAlive）；②超时杀**整棵进程树**；③失败后回收本仓的**孤儿** git/ssh（只认命令行带本镜像路径或 `ssh.github.com … git-receive-pack`、且父进程已消失的）。判据三件套：`git push` 子进程存在 + `pack-objects` CPU 不涨 + ssh 读写 0 字节 ⇒ 管道死了，不是网速慢。
 - **成功轮要清 `last_error`**（0.4.17）：健康文件是连续性记账的单一来源，失败时写 `last_error`、成功时必须置 `None`——否则「上一轮 timeout 3300s」会一直挂着，被后读的人（包括我）误判成当前仍在失败。`repaired_note` 属历史注记，保留不动。
 - **自定义拷贝路径必须登记 `_COPIED`，否则会被 prune 当残留删掉**（0.4.30，2026-10-25 实案）：`copy_kanban_dbs` 直接调 `snapshot_sqlite()`（绕过了 `copy_file` 的登记），结果 `prune_unvisited` 把 11 个板库当"本轮未访问"全删了——镜像是空的、且没有任何报错。凡是不走 `copy_file()` 的写镜像路径，都必须 `_COPIED.add(str(目标路径))`。回归＝`test-kanban-scope.py` 的 S5（copy 后跑 prune，断言文件仍在）。
+- **换代必须分批推送（2GB 上限）**（0.4.33）：`scripts/seed_generation.sh` 用临时 index 逐批 `add -f → write-tree → commit-tree → push`（每批 ≤800MB），最后校验文件数与树；`rotate-generation.sh` 已改为调它。
+  三个必踩坑：① `read-tree --empty` 不带 `GIT_INDEX_FILE` 会**清空镜像真实 index**；② `git ls-files -z | python - <<'PY'` 里 heredoc 会顶掉管道 stdin（分批恒为 0）；③ 临时 index 是空的，所有文件都"未跟踪"，仓库 `.gitignore` 会让 `add` 失败 ⇒ 必须 `-f`。
+- **容量判据只看 `gh api … --jq .size`**：`churn-report.py` 是「新增 blob 字节」，不是仓体积增长（整份重写的文件 git 仍会 delta）。实测同一时段 churn 130–155MB/轮，而远端只涨 ≈14MB/小时。
 - **kanban 备份必须严守白名单**（0.4.29）：只备 `boards/<board>/kanban.db`（含 `boards/_archived/<board>/kanban.db`）与顶层 `kanban.db`。旧实现用 `rglob("*.db")`，把任务工作区/证据里的 73 个 `school80.db` 之类也备上了（镜像 84 个 db / 36MB），违背「工作区属过程记录」的政策、每轮还多快照 70+ 个无关库。回归＝`test-kanban-scope.py`（4 项）。**改动后下一轮会自动 prune 掉多备的工作区库。**
-- **末片必须压到 3MB（`TAIL_MAX`）**（0.4.31）：会话是「一行=一个整会话」，活跃会话每轮只在尾部追加，所以每轮重写量≈活跃会话数×末片大小。实测把末片从 12MB 压到 3MB 后，8 个活跃巨会话的尾部重写从 90MB 降到约 1/4。切片规则＝历史部分 12MB 一片，最后一刀正好落在 3MB（`part_slices()`，保证首尾相接无空隙）。回归＝`test-split.py` 的 [5] 末片 ≤ 3MB + [2] 拼接后逐字节等价。
+- **末片上限方案已被实测否决（0.4.31 回退）**：把末片压到 3MB 看似能减少尾部重写，实测反而更差——
+  切片边界随总长浮动，每次追加要重算「倒二片+末片」，churn 从 137MB 升到 **156MB**。分片边界必须由**固定偏移**决定。
+  教训：改动分片/稳定化后，先看真实一轮的 `churn-report.py` 与 `gh api .size`，别只看单文件大小。
 - **SQLite 必须用在线备份 API 快照，不能直接拷**（0.4.28）：看板库是 `journal_mode=wal`，而 `-wal`/`-shm` 被排除在备份外 ⇒ 只拷 `.db` 会丢掉尚未 checkpoint 的已提交事务；实测极端情况下**连建表语句都可能不在 `.db` 里**（普通拷贝打开即 `no such table`）。现在 `copy_file()` 对所有 `.db` 走 `snapshot_sqlite()`（`sqlite3.Connection.backup()`）：读穿 WAL、产出自包含紧凑快照，失败自动回退普通拷贝。覆盖 `kanban/*.db`、`shared-state.db`、`projects.db` 以及各档 `projects.db`。回归＝`test-kanban-snapshot.py`（3 项）。
 - **哨兵有超期兜底**（0.4.27）：周期 cron 的 `next_run_at` 会被网关重启重排（实测把 05:57 挪到 06:29，空窗 2.5h）；哨兵现在除「网关重启 / 静默 5 分钟 / 长静默恢复」外，还有 **⑤ overdue**——镜像 `finished_at` 超过 2.5 小时、没在同步、也不满足 20 分钟新鲜闸，就补一轮。回归＝`test-hb-sentinel.py` S8/S9。
 - **导出超时只杀直接子进程 → 孤儿导出会撞死下一轮**（0.4.15，2026-10-24 实案）：连续两轮 3300s 超时，原因是 `subprocess` 超时只杀直接子进程（`run_in_runtime` 启动器），真正的导出进程活下来占住 `profiles/<档>/state.db` 与镜像；下一轮再起一个，两个导出同时写同一批文件 → 双双卡死、RSS 涨到 1.6GB。现在三处收口：①导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()` 杀整树；②每轮启动后 `_reap_orphan_exporters()` 只回收「父进程已消失」的导出（识别条件：python 解释器 ＋ **真实参数**里以 `export_all_profiles.py` 结尾 ＋ 带 `--home`/`--out`；只看 argv 不看整条命令行文本，否则自己的 `-c` 探针只要代码里提到这些字眼就会自匹配）；③包装器 `hb-autosync` 超时也杀整树。回归＝`scripts/test-reap-exporters.py`（3 场景）。**判据：** 超时后先看 `ps` 里有没有 `export_all_profiles` 进程，再看下一轮是否同时存在两个导出。

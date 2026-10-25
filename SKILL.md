@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.39
+version: 0.4.40
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -48,6 +48,8 @@ metadata:
 | 路由回写（微信/QQ 续接） | `python <REPO>/tools/apply_routing.py` |
 | 桌面端收尾器 | `pwsh -NoProfile -File <REPO>/tools/finish_restore.ps1 -Repo <REPO>` |
 
+> **两个 `tools/` 别搞混**：`<REPO>/tools/` 只在**备份仓 clone 目录**里（每轮同步时由本技能 `scripts/` 复制过去，`D:\hermes-backup	ools\` 就是它）；**技能仓本身只有 `scripts/`，没有 `tools/`**。所以恢复类命令要在备份仓目录下跑，同步/审计/换代类命令用 `<SKILL>/scripts/`。
+
 > 机器本地配置（镜像目录、同步默认仓名）放技能目录 `local.json` 的 `mirror` / `repo` 两项（不进任何仓库）；镜像目录默认自动探测，`--mirror` 可指定；镜像已有 origin 时仓名以 origin 为准（换代脚本会同时改写 origin 与 `local.json`，代码里不写死代名）。
 
 ## 文件构成
@@ -63,7 +65,7 @@ metadata:
 - `scripts/hb-autosync.py` — 周期同步（③每 2 小时；安装方式同上）；与哨兵共用 `state/hb-sync-child.log`（子进程输出流式落盘）与 `state/hb-sync-health.json`（连续失败计数 + needs-attention 标记）
 - `scripts/export_all_profiles.py` — 单进程批量会话导出（sync 提速件；直调官方导出函数，与 CLI 输出逐字节一致，失败自动回退逐档 CLI）
 - `scripts/verify_drill.py` — 演练对账器（镜像会话文件 vs 沙箱 DB 逐会话比对；`restore-drill.md` 第 6 步的现成实现，参数＝沙箱根目录）
-- `scripts/test-hb-sentinel.py` — 哨兵分支回归（8 场景：①网关重启 / ②静默 5 分钟 / ④长静默恢复 / 新鲜度闸 / 锁跳过 / 失败上报 / 冷启动两态；假 HERMES_HOME＋桩 sync.py，不碰真数据）
+- `scripts/test-hb-sentinel.py` — 哨兵分支回归（**10 个场景块**：S1/S1b/S2–S9——①网关重启 / ②静默 5 分钟 / ④长静默恢复 / 新鲜度闸 / 锁跳过 / 失败上报 / 冷启动两态；假 HERMES_HOME＋桩 sync.py，不碰真数据）
 - `scripts/test-hb-health.py` — 健康记账回归（sync.py 单一来源 + 包装"未跑完"补偿去重）
 - `scripts/test-audit-coverage.py` — 覆盖率审计的**负向对照**（8 场景合成夹具：全等 / 缺会话 / 多会话 / 镜像超前 / 镜像落后 / 轮内新建豁免 / 孤立组 / 坏 JSON；证明审计"该红就红"，不碰真库）
 - `scripts/test-split.py` — 分片回归（合成 2MB/100MB/45MB 三条会话、阈值取 `sync.PART_MAX`）：断言每片≤阈值、片数＝ceil(字节/阈值)、按片名拼接后**小会话逐字节相同**、**>5MB 的会话语义等价**（`json.loads` 相同——它们会被尾部稳定化重排成员顺序，不能再用字节相等断言）
@@ -124,7 +126,7 @@ metadata:
 ## Pitfalls
 
 - **恢复要带 `--verify`**（0.4.22）：`restore_sessions.py --fast-import --verify` 会在导入后**逐会话**把「镜像里的消息条数」与「恢复库里的行数」对齐，不一致就打印明细并让退出码=3。以前演练靠人肉比对（我手动抽 7 个会话），现在一条命令出结论；实测 mentoragent 11/638 「不一致 0 个」。
-- **跑会 import `hermes_state` 的脚本必须经 `tools/run_in_runtime.py`**：在本机终端里 `python <脚本>.py` 会被启动器以**另一个解释器**（缺 ruamel 等运行期依赖）经 runpy 重跑，报 `ModuleNotFoundError: No module named 'ruamel'`；就是 `python -c "import <模块>"` 也不能豁免（`SessionDB(...)` 构造会把进程切到工具树 python）。正确形态一律是 `python <REPO>/tools/run_in_runtime.py <脚本> [参数]`——恢复、对账、A/B 测试脚本皆同。同理：**恢复/对账不要与 `hermes update` 并发**，更新收尾持有 checkout 锁，卡住的子进程会 0% CPU 空转（判据：RSS 几 MB、CPU 0、日志停在启动横幅）。
+- **跑会 import `hermes_state` 的脚本必须经 `<REPO>/tools/run_in_runtime.py`**（备份仓内副本；技能仓只有 `scripts/`）：在本机终端里 `python <脚本>.py` 会被启动器以**另一个解释器**（缺 ruamel 等运行期依赖）经 runpy 重跑，报 `ModuleNotFoundError: No module named 'ruamel'`；就是 `python -c "import <模块>"` 也不能豁免（`SessionDB(...)` 构造会把进程切到工具树 python）。正确形态一律是 `python <REPO>/tools/run_in_runtime.py <脚本> [参数]`——恢复、对账、A/B 测试脚本皆同。同理：**恢复/对账不要与 `hermes update` 并发**，更新收尾持有 checkout 锁，卡住的子进程会 0% CPU 空转（判据：RSS 几 MB、CPU 0、日志停在启动横幅）。
 - **`sync.py` 的 home 只按 `LOCALAPPDATA` 解析（不读 `HERMES_HOME` 环境变量）**：`HERMES_HOME` 只影响两个包装脚本（哨兵/周期）与 hook 的路径。写单测时必须**注入 `sync.HERMES_HOME / HEALTH_FILE / ATTENTION_MARKER / RUNS_LOG`** 模块属性，否则会写进真实 `state/`（2026-10-23 实测踩过：把假失败记进了真健康文件）。
 - **推送预算 900s→1500s、外层 3300s→3900s**（0.4.23）：一次性大重排那轮（900MB 级）推送超 900s 被掐，属合法大包不是故障；外层同步放宽到 3900s（collect+export+commit 最坏 ~1900s）。日常轮次仍只有几十 MB，读数不会变。
 - **推送卡在"零字节"时先看进程树，别只看网络**（0.4.9）：`subprocess` 超时只杀直接子进程，`git pack-objects` / `ssh` 这些孙子会留下来占住管道 → **之后每次重试都秒卡、零字节**（2026-10-23 实案：一轮推 10 分钟零字节、三次重试全卡，GitHub 侧只报 `Connection … closed by remote host`）。现在的 `sync.py`：①所有 git 网络操作注入 `GIT_SSH_COMMAND` 保活（ServerAliveInterval=20 / CountMax=30 / TCPKeepAlive）；②超时杀**整棵进程树**；③失败后回收本仓的**孤儿** git/ssh（只认命令行带本镜像路径或 `ssh.github.com … git-receive-pack`、且父进程已消失的）。判据三件套：`git push` 子进程存在 + `pack-objects` CPU 不涨 + ssh 读写 0 字节 ⇒ 管道死了，不是网速慢。

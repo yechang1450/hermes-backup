@@ -1,7 +1,8 @@
 # hermes-cloud-backup
 
 把整个 Hermes Agent 备份到你的**私有 GitHub 仓**；重装/换机后，在新的 Hermes 里一句话恢复。
-Windows、零第三方依赖（Python 标准库 + PowerShell）。
+Windows、**零必需第三方依赖**（Python 标准库 + PowerShell；`psutil` 属可选增强——装了才有更彻底的
+进程树回收/孤儿清理，没装则自动降级，同步本身照常跑）。
 
 ## 它做什么
 
@@ -56,10 +57,6 @@ hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-cloud
 - 技能本体不含任何密钥；全部操作在本机执行；唯一网络行为是推送到你自己的仓库。
 - 技能目录下的 `local.json` 是机器本地配置，不进入任何仓库。
 
-## Copyright
+## License
 
-Copyright © 2026 yechang1450. All rights reserved.
-
-No additional license or permission is granted beyond rights provided by
-GitHub's Terms of Service or applicable law. Third-party components remain
-subject to their own license notices.
+MIT

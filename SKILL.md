@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.62
+version: 0.4.63
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -31,7 +31,8 @@ metadata:
 
 - GitHub 账号。首次使用：`python <SKILL>/scripts/sync.py --owner <你的GitHub用户名> --create-remote`（自动建私有仓、配 remote；已有仓直接识别）。owner/remote 也会从镜像仓 git remote 或 `gh` 登录名自动解析。
 - 本机 Hermes 安装完整：`HERMES_HOME`（默认 `%LOCALAPPDATA%\hermes`）内有 `hermes-agent/` 源码与 `bin/`、`tools/python-*/`。
-- 恢复端需要：git、可访问 GitHub（SSH 或 PAT）、gh（可选但强烈建议——用于私有性检查）。
+- 恢复端需要：git、可访问 GitHub（SSH 或 PAT）。**`gh` 实际上也是必需的**：私有性检查默认 fail-closed，
+  没有 gh（或查询失败）会**拒绝推送**；确需在无法验证的环境里推，显式加 `--allow-unverified-privacy`。
 - 脚本纯标准库；除会话导入外都可用任意 python 直跑。
 
 ## Quick Reference

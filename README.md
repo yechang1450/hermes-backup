@@ -49,7 +49,8 @@ hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-cloud
 ## 前提
 
 - Windows 11 + Hermes Agent（常规安装布局：`%LOCALAPPDATA%\hermes\` 下有 `hermes-agent/`、`bin/`、`tools/python-*/`）。
-- Python 与 git 用 Hermes 自带的即可；`gh`（GitHub CLI）可选，用于建仓与私有性检查。
+- Python 与 git 用 Hermes 自带的即可。**`gh`（GitHub CLI）实际必需**：建仓、解析属主与私有性检查都靠它；
+  没有 gh 时同步会**拒绝推送**（可用 `--allow-unverified-privacy` 显式放行，但私有性就得你自己保证）。
 
 ## 安全
 

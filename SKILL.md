@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.56
+version: 0.4.57
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -151,6 +151,9 @@ metadata:
   现在改为**拒绝推送**，确需在无法验证的环境里推要显式加 `--allow-unverified-privacy`。
 - **远程 URL 解析要容忍端口**（0.4.52）：`ssh://git@ssh.github.com:443/owner/repo.git`（备用通道）原正则把 `:443` 当 owner 段、解析失败，
   于是属主为空 → 私有性检查被跳过。正则已加 `(?::\d+)?`；实测 5 种 URL 形态（ssh+端口/ssh/https/.git 有无）全部解析正确。
+- **恢复时「0 个会话」不再算成功**（0.4.56，2026-10-26 实测踩到）：`--source` 指错目录时原来打印一行「源目录里没有会话文件」
+  然后 `imported=0` 以 **rc=0** 退出，等于什么都没恢复却报告成功。现在空档目录 → **rc=2** + 明确提示，确属预期加 `--allow-empty`；
+  源根目录不存在仍 rc=1。另实测：坏 JSON 分片不会崩，计入 `failed` 并让整轮 rc=3（好档照常导入）。
 - **文档引用的文件必须在仓里**（0.4.50）：`scripts/check-parts.py`、`scripts/verify_drill.py`、`references/restore-drill.md`
   三个文件此前只在本地、**从未发布**——按 SKILL.md 执行会直接「文件不存在」。已随本版发布（check-parts 实跑镜像：`PARTS-OK`）。
 - **入口脚本的 `--help` 不得触发真动作**（0.4.50）：`hb-sentinel.py` / `hb-autosync.py` 原来没有参数解析，

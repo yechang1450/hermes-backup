@@ -49,6 +49,10 @@ def main() -> int:
     if pdir.is_dir():
         for d in sorted(pdir.iterdir()):
             if d.is_dir() and not d.name.startswith(".") and (d / "profile.yaml").is_file():
+                if not (d / "state.db").is_file():
+                    # 别 SessionDB() 去"顺手建库"：注册了但从没跑过的档会留下一个空 state.db
+                    print(f"[bulk-export] {d.name}: 跳过（无 state.db）", flush=True)
+                    continue
                 jobs.append((d.name, d / "state.db"))
     rc = 0
     for name, dbp in jobs:

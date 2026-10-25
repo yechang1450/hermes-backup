@@ -259,6 +259,12 @@ def main() -> int:
                 relaxed.append(attr)
         print(f"已放宽导入上限（进程内）: {len(relaxed)} 项")
 
+    # 软提示：指错目录时至少别让人以为"恢复到了正确的地方"
+    if not home.is_dir():
+        print(f"（注意）目标 HERMES_HOME 不存在，将按需新建：{home}")
+    elif not any((home / m).exists() for m in ("hermes-agent", "config.yaml", "memories")):
+        print(f"（注意）目标目录不像 Hermes home（无 hermes-agent/config.yaml/memories）：{home}")
+
     total = {"imported": 0, "skipped": 0, "failed": 0, "verify_failed": 0}
     empty_sources: list[str] = []
     for prof in profiles:

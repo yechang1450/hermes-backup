@@ -39,7 +39,7 @@ QUIET_SECONDS = 300          # ② 静默阈值：5 分钟（按全库最后一�
 LONG_QUIET_SECONDS = 3600    # ④ 长静默阈值：1 小时
 OVERDUE_SECONDS = 150 * 60   # ⑤ 超期兜底：>2.5 小时没有成功轮 ⇒ 补一轮（周期 cron 漂移/漏跑时）
 MIN_SYNC_GAP = 20 * 60       # 距上次实际同步 ≥20 分钟才允许再触发
-SYNC_TIMEOUT = 3300          # 同步单轮上限（cron 脚本超时默认 3600）
+SYNC_TIMEOUT = 3900    # 与 hb-autosync 一致（导出 2000s + 推送 1500s + 余量）
 
 NOTES: list[str] = []
 
@@ -240,6 +240,13 @@ def run_sync(tag: str) -> bool:
 
 
 def main() -> int:
+    # 防呆（2026-10-26）：`--help` 落到这里会**真跑一轮同步**——实测子代理跑
+    # `python hb-sentinel.py --help` 触发了一次真实同步。这里先短路。
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        print("用法: python hb-sentinel.py [--debug]\n"
+              "  哨兵：判断是否需要补一轮同步；需要就调用 sync.py。\n"
+              "  --debug  打印判定过程（默认静默：成功=空输出）")
+        return 0
     if "--debug" in sys.argv:
         st = load_state()
         busy, newest = busy_signals()

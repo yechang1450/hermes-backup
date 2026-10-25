@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.49
+version: 0.4.50
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -139,6 +139,11 @@ metadata:
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
   （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
   且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
+- **文档引用的文件必须在仓里**（0.4.50）：`scripts/check-parts.py`、`scripts/verify_drill.py`、`references/restore-drill.md`
+  三个文件此前只在本地、**从未发布**——按 SKILL.md 执行会直接「文件不存在」。已随本版发布（check-parts 实跑镜像：`PARTS-OK`）。
+- **入口脚本的 `--help` 不得触发真动作**（0.4.50）：`hb-sentinel.py` / `hb-autosync.py` 原来没有参数解析，
+  `--help` 会被忽略并**真跑一轮同步**（实测子代理这么做触发过一次真实同步）；`verify_drill.py` 把 `--help` 当路径直接崩。三个都加了短路。
+- **哨兵与周期入口的单轮超时统一 3900s**（0.4.50）：哨兵原写 3300s，与文档/autosync 的 3900s 不一致。
 - **整档删除必须显式授权**（0.4.49，2026-10-26 代码审查发现）：`prune_stale` 原实现「keep 里没有的档就 rmtree」——
   某档导出失败/零产出时会把它**整档历史清掉**再 commit+push。现在签名是 `prune_stale(root, keep, allow_delete=…)`，
   只有「已确认活库里不存在的档」才允许整档删除，其余只清目录内多余文件；导出无产出时该档本轮受保护。回归＝`test-prune-protect.py`（S1–S3）。

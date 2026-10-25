@@ -142,6 +142,11 @@ def git_env() -> dict:
 
 
 def main() -> int:
+    # 防呆（2026-10-26）：`--help` 落到这里会真跑一轮（实测 rc=1 并尝试真实同步）
+    if "-h" in sys.argv[1:] or "--help" in sys.argv[1:]:
+        print("用法: python hb-autosync.py\n"
+              "  周期同步入口：调用 sync.py 跑一轮，超时杀整树并写健康账本。无参数。")
+        return 0
     meta = mirror_meta()
     try:
         m = json.loads(meta.read_text(encoding="utf-8"))

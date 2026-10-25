@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.38
+version: 0.4.39
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -134,7 +134,7 @@ metadata:
   三个必踩坑：① `read-tree --empty` 不带 `GIT_INDEX_FILE` 会**清空镜像真实 index**；② `git ls-files -z | python - <<'PY'` 里 heredoc 会顶掉管道 stdin（分批恒为 0）；③ 临时 index 是空的，所有文件都"未跟踪"，仓库 `.gitignore` 会让 `add` 失败 ⇒ 必须 `-f`。
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
   （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
-  且只在没有同步轮在跑的时候做。
+  且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
 - **校验远程状态要用具体 ref，不要用 `HEAD`**（0.4.35）：`git ls-remote <本地路径> HEAD` 在本地传输下返回空，
   曾把「5 批全部推送成功」误判成失败（exit 1）。一律取 `refs/heads/main`（必要处加重试）。
 - **容量判据只看 `gh api … --jq .size`**：`churn-report.py` 是「新增 blob 字节」，不是仓体积增长（整份重写的文件 git 仍会 delta）。实测同一时段 churn 130–155MB/轮，而远端只涨 ≈14MB/小时。

@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.37
+version: 0.4.38
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -73,6 +73,7 @@ metadata:
 - `scripts/test-reap-exporters.py` — 孤儿导出回收回归（3 场景：孤儿被杀 / 父进程健在者不动 / 命令行只提到文件名者不杀）
 - `scripts/test-kanban-snapshot.py` — SQLite 在线快照回归（3 项：WAL 下快照可正常打开 / 表结构与行数一致 / 普通拷贝的反例）
 - `scripts/test-kanban-scope.py` — kanban 采集范围回归（5 项：只备 boards 板库 / 不备工作区 db / 顶层 kanban.db / 走快照 API / **prune 之后板库仍在**）
+- `scripts/check-parts.py` — 镜像分片形态体检（P1 编号连续 / P2 除末片外每片正好 PART_MAX / P3 末片合规 / P4 无形态混用；`PARTS-FAIL` 退出码 1）。改切片代码后用它验收「数据是否真的归位」
 - `scripts/audit-coverage.py` — 覆盖率审计：①会话层（镜像会话文件 vs 活库 state.db 逐会话条数）②文件层（`--with-files`：HERMES_HOME 顶层条目 vs 采集白名单，列出未分类/漏备项）；判据＝硬伤退出码 1
 - `scripts/rotate-generation.sh` — 数据仓换代（孤儿快照单提交种子 → 新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑）
 - `references/generations.md` — 数据仓「换代」归档预案（体积到阈值时换新代仓、旧仓冻结为只读档案；不重写历史）
@@ -141,6 +142,9 @@ metadata:
 - **末片上限方案已被实测否决（0.4.31 回退）**：把末片压到 3MB 看似能减少尾部重写，实测反而更差——
   切片边界随总长浮动，每次追加要重算「倒二片+末片」，churn 从 137MB 升到 **156MB**。分片边界必须由**固定偏移**决定。
   教训：改动分片/稳定化后，先看真实一轮的 `churn-report.py` 与 `gh api .size`，别只看单文件大小。
+- **代码回退 ≠ 数据归位**：切片/存储代码改动后，镜像里的旧文件**不会自动变形**——写入侧对「内容相同」的文件直接跳过，所以旧形态会一直留着（实测：代码已改回固定 12MB 边界，11 个会话仍是末片形态，直到跑过一轮真同步才归位）。判据是**外部可观测的形态指纹**，不是读代码：
+  `python <SKILL>/scripts/check-parts.py --repo <镜像>` —— 断言片号连续、除末片外每片**正好** PART_MAX、末片 ≤ PART_MAX、无「单体＋分片」混用；返回 `PARTS-FAIL` 就说明镜像还是别的切法，跑一轮同步再验。
+  同理适用于任何格式切换：改完代码必须**落地一轮**并用产物形状（片大小、文件数、DB 能否打开）验收，别拿「代码看起来对」当结论。
 - **SQLite 必须用在线备份 API 快照，不能直接拷**（0.4.28）：看板库是 `journal_mode=wal`，而 `-wal`/`-shm` 被排除在备份外 ⇒ 只拷 `.db` 会丢掉尚未 checkpoint 的已提交事务；实测极端情况下**连建表语句都可能不在 `.db` 里**（普通拷贝打开即 `no such table`）。现在 `copy_file()` 对所有 `.db` 走 `snapshot_sqlite()`（`sqlite3.Connection.backup()`）：读穿 WAL、产出自包含紧凑快照，失败自动回退普通拷贝。覆盖 `kanban/*.db`、`shared-state.db`、`projects.db` 以及各档 `projects.db`。回归＝`test-kanban-snapshot.py`（3 项）。
 - **哨兵有超期兜底**（0.4.27）：周期 cron 的 `next_run_at` 会被网关重启重排（实测把 05:57 挪到 06:29，空窗 2.5h）；哨兵现在除「网关重启 / 静默 5 分钟 / 长静默恢复」外，还有 **⑤ overdue**——镜像 `finished_at` 超过 2.5 小时、没在同步、也不满足 20 分钟新鲜闸，就补一轮。回归＝`test-hb-sentinel.py` S8/S9。
 - **导出超时只杀直接子进程 → 孤儿导出会撞死下一轮**（0.4.15，2026-10-24 实案）：连续两轮 3300s 超时，原因是 `subprocess` 超时只杀直接子进程（`run_in_runtime` 启动器），真正的导出进程活下来占住 `profiles/<档>/state.db` 与镜像；下一轮再起一个，两个导出同时写同一批文件 → 双双卡死、RSS 涨到 1.6GB。现在三处收口：①导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()` 杀整树；②每轮启动后 `_reap_orphan_exporters()` 只回收「父进程已消失」的导出（识别条件：python 解释器 ＋ **真实参数**里以 `export_all_profiles.py` 结尾 ＋ 带 `--home`/`--out`；只看 argv 不看整条命令行文本，否则自己的 `-c` 探针只要代码里提到这些字眼就会自匹配）；③包装器 `hb-autosync` 超时也杀整树。回归＝`scripts/test-reap-exporters.py`（3 场景）。**判据：** 超时后先看 `ps` 里有没有 `export_all_profiles` 进程，再看下一轮是否同时存在两个导出。
@@ -156,7 +160,7 @@ metadata:
 - **意外中断与并发自愈**：自带单实例防撞锁——**v3.2 起锁内记录持有者 pid：持有进程已消失（触发端被掐/崩溃）立即接管，3h 陈旧窗仅兜底**（早期版本纯 3h 窗口＝被掐后可能空窗最长 3 小时）；被强杀遗留的 `.git/index.lock`（>120s）自动清除并重试一次。真机实测：进程在 `git add` 瞬间被杀 → 下一轮同步报 `rc=128` —— 自愈代码即为覆盖该情形；被掐轮次的**未推提交由下一轮随带补推（零丢失）**。- **网关重启与在跑轮次的三种组合**（先取证据、都别慌）：① drain 杀掉父脚本、`sync.py` 作为**脱离进程继续跑完**——`hermes cron runs` 会停在 `running` 或落 `unknown`，**判轮次死活只认锁文件里的 pid 存活**（存活＝还在跑、会自行落地；已死＝孤儿锁由下一轮立即接管）；② 在途提交被掐——判「有没有丢数据」**不看 run 状态**，用 `git merge-base --is-ancestor <该轮提交> <远端HEAD>`：命中＝已进远端历史、零丢失；未命中才去查采集/推送段；③ 父脚本被杀时外层超时兜底一并消失 ⇒ 该轮不受 `script_timeout` 约束，必要时人工盯或回收。另：两轮相撞时后来者**立即让路**（日志 `已有另一轮同步在进行（锁年龄 Ns）——本轮退出，让路`）——设计行为，不是失败。
 - **推送断连（exit 3）≠ 没推上去**：`send-pack: unexpected disconnect while reading sideband packet` / `Connection to ssh.github.com closed by remote host` 是传输层断线——GitHub 可能已收完整包并更新 ref，只是客户端没拿到确认。**判据只认远端口**：`git ls-remote origin main`（或 `… HEAD`）与 `git rev-parse HEAD` 比对；**别拿本地 `origin/main` 跟踪引用当远端**（失败的 push 不更新它，两种误读都会发生）。一致 ⇒ 零丢失、失败仅是确认缺失：不重推、不 force、不改机制，`hb-sync-health.json` 记 1 次失败、下轮照常；不一致 ⇒ 提交仍在本地、下一轮自动补推。**判「这轮为什么慢」先看在跑 worker 数**：十几张看板 worker 并行时导出段会涨 2–3 倍（实测 485–627s → 1481s），整轮逼近外层预算但仍在预算内，别当卡死。
 - **失败诊断锚**：同步失败先读 ① `meta/sync-state.json` 的 `git_error` / `committed` / `pushed` / `finished_at`（失败路径也会写 meta）；② 镜像 `logs/last-run.log`（每轮全量日志）。**提交里的 meta 滞后一版**——write_meta 在 commit 之后执行，所以最新提交里包含的是**上一轮**的 sync-state（工作区 `meta/sync-state.json` 常显 modified，属正常，随下轮提交）。
-- **慢轮诊断（阶段预算＋廉价探针）**：正常档一轮 5–8 分钟（收集 1–2 分钟 / 批量导出 ~2 分钟 / 拆分＋`git add` 秒级 / 提交与推送 1–3 分钟）；明显超出即按段找放大器。**`logs/last-run.log` 在轮次结束时整份落盘，中途没有文件可读** ⇒ 要么等落地，要么用廉价探针：锁文件 pid 存活（用 `psutil.Process(pid)` 判定——`ps -W` 只显示可执行名、不含命令行参数，`ps -W | grep 脚本名` 永远匹配不到 python 子进程）、`.git/index.lock` 存在＝正在 add/commit、`git count-objects -v` 的 loose 数、包文件 mtime（repack 痕迹）、进程 IO/CPU（psutil）。**轮次未结束时不要对镜像跑全树重探针**（`du -sm`、`git status`、递归 ls）：持索引锁时 `git status` 会挂住、大目录 `du` 会跑满超时。日志内建阶段行：`git 提交完成：Ns（含 add 与自动 gc）`、`git 推送完成：Ns`。**包装脚本必须把子进程输出流式落盘**（`stdout=<文件句柄>`，不要 `capture_output`）：超时被掐的那一刻 `capture_output` 会连子进程 stdout 一起丢，超时轮就变成零证据；落盘后从日志尾直接指认卡在哪个阶段，成功仍以「日志尾含完成标记」判定（保持静默）。**归因先做对照实验**：干净树上跑同一条 git 命令（`git add -A` 秒级返回＝git 本身不慢，慢在索引被打脏后的整树重哈希），别急着赖 gc 或网络。三类已治理的放大器：每档一次 CLI 启动的固定开销 → 单进程批量导出；**重建式采集**（清空目录再重拷——copy2 保得住 mtime，但文件重建让 ctime 全变，git 判索引失效、整树重哈希 ~3GB，实测提交段 8–10 分钟）→ 写前比对「内容相同不重写」＋ prune 收敛（覆盖层与 sessions 同一把刀）；`git gc --auto` 全量 repack（松散对象过阈值即整包重写、可耗十分钟）→ 压降每轮对象产出即自然摊薄，**勿关 `gc.auto`**（保持 git 默认行为）。
+- **慢轮诊断（阶段预算＋廉价探针）**：正常档一轮 5–8 分钟（收集 1–2 分钟 / 批量导出 ~2 分钟 / 拆分＋`git add` 秒级 / 提交与推送 1–3 分钟）；明显超出即按段找放大器。**`logs/last-run.log` 在轮次结束时整份落盘，中途没有文件可读** ⇒ 要么等落地，要么用廉价探针：锁文件 pid 存活（用 `psutil.Process(pid)` 判定——`ps -W` 只显示可执行名、不含命令行参数，`ps -W | grep 脚本名` 永远匹配不到 python 子进程）、`.git/index.lock` 存在＝正在 add/commit、`git count-objects -v` 的 loose 数、包文件 mtime（repack 痕迹）、进程 IO/CPU（psutil）。**轮次未结束时不要对镜像跑全树重探针**（`du -sm`、`git status`、递归 ls）：持索引锁时 `git status` 会挂住、大目录 `du` 会跑满超时。日志内建阶段行：`git 提交完成：Ns（含 add 与自动 gc）`、`git 推送完成：Ns`。**包装脚本必须把子进程输出流式落盘**（`stdout=<文件句柄>`，不要 `capture_output`）：超时被掐的那一刻 `capture_output` 会连子进程 stdout 一起丢，超时轮就变成零证据；落盘后从日志尾直接指认卡在哪个阶段，成功仍以「日志尾含完成标记」判定（保持静默）。**归因先做对照实验**：干净树上跑同一条 git 命令（`git add -A` 秒级返回＝git 本身不慢，慢在索引被打脏后的整树重哈希），别急着赖 gc 或网络。三类已治理的放大器：每档一次 CLI 启动的固定开销 → 单进程批量导出；**重建式采集**（清空目录再重拷——copy2 保得住 mtime，但文件重建让 ctime 全变，git 判索引失效、整树重哈希 ~3GB，实测提交段 8–10 分钟）→ 写前比对「内容相同不重写」＋ prune 收敛（覆盖层与 sessions 同一把刀）；`git gc --auto` 全量 repack（松散对象过阈值即整包重写、可耗十分钟）→ **它会在轮内同步执行**，实测把一轮从 ~300s 拖到 1,465s（git 段 1,090s）⇒ 镜像仓设 `gc.auto=0`，改为按需手动 `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），且只在没有同步在跑的时候做。
 - **官方导入尺寸上限**（≤5MB/≤1万条/单次 ≤25MB 等）：面向 Web 场景；恢复工具在**本进程内**放宽这些常量（不改官方文件）。若官方改版导致常量改名，工具会记录并继续（检查 `hasattr`）。
 - **导出不脱敏**：会话文件含对话原文与凭据讨论 → 仓必须永远私有。
 - **备份范围（0.3.8 起）**：`kanban/` 只备数据库（`boards/*/kanban.db`，约 30MB）；任务运行工作区/证据/日志属过程记录**不入云**（实测占该目录 96%：758MB/4.3 万文件，含整份 git 克隆）——恢复后看板卡片与 runs 在、任务临时工作区不在（预期，别当缺件报）。**范围归 owner**：审计发现白名单外的数据（凭据、快照等）只**报告**——列出路径、体积、可否重取，由 owner 一句话定是否纳入；不擅自扩大或缩小备份范围（那是政策，不是技术优化）。

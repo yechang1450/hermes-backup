@@ -112,12 +112,15 @@ def _(out: dict) -> None:
     assert "缺 0(新建豁免 1)" in o
 
 
-@case("S4 镜像多会话 ⇒ FAIL")
+@case("S4 镜像多会话 ⇒ PASS + 警告（不算硬伤）")
 def _(out: dict) -> None:
+    # 口径变更（0.4.48）：活库删掉的会话（子代理临时会话/人工删除/库回滚）在镜像里保留到下一轮 prune，
+    # 这属于「备份比活库多」，不是备份缺陷；只作警告，不判 AUDIT-FAIL。
     reset()
     write_session(REPO / "sessions" / "main" / "ghost.jsonl", 1)
     rc, o = run()
-    assert rc == 1 and "多 1" in o and "ghost" in o
+    assert rc == 0 and "AUDIT-PASS" in o, "多会话应只警告，实际 rc=%d\n%s" % (rc, o[-400:])
+    assert "多 1" in o and "ghost" in o and "警告" in o
 
 
 @case("S5 镜像落后（增量未入库）⇒ PASS")

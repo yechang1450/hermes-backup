@@ -9,7 +9,7 @@
 
 判据（退出码）：
     0 = 无硬伤（镜像不缺会话、不多会话、且没有任何会话的镜像条数**多于**活库）
-    1 = 有硬伤（缺会话 / 多会话 / 镜像条数多于活库——后者意味着数据错位或库被回滚）
+    1 = 有硬伤（缺会话 / 镜像条数多于活库 / 会话文件解析失败）；「镜像多会话」只作警告（活库删过东西）
     镜像条数**少于**活库是正常：镜像只是上一轮快照，之后的增量消息还没进镜像（报告里单列）。
 
 注意：只读活库（mode=ro）；解析镜像文件用的是与恢复侧相同的分组规则（单件/分片/旧 gz）。
@@ -265,6 +265,7 @@ def main() -> int:
     t0 = time.time()
     report: dict = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "profiles": {}}
     hard: list[str] = []
+    warns: list[str] = []
     grand = {"live_s": 0, "live_m": 0, "mirror_s": 0, "mirror_m": 0, "ahead_msgs": 0, "behind_msgs": 0}
 
     for prof in profiles:
@@ -302,11 +303,17 @@ def main() -> int:
         grand["behind_msgs"] += rep["mirror_behind_messages"]
 
         flag = ""
-        if missing or extra or ahead or bad:
+        # 「镜像多」不算备份缺陷：活库删掉的会话（子代理临时会话/人工删除/库回滚）在镜像里会保留到下一轮 prune。
+        # 2026-10-26 实测：5 个 `Subagent: …` 临时会话被判硬伤 → 每次都 AUDIT-FAIL，把信号淹没了。
+        # 真硬伤只留三种：镜像缺会话 / 镜像条数多于活库（错位或回滚）/ 文件解析失败。
+        if extra:
+            flag = "  ⚠ 多会话"
+            warns.append("%s: 镜像多 %d 个会话（活库已无；下一轮 prune 会收，若持续多轮存在请查活库是否回滚）例 %s"
+                         % (prof, len(extra), extra[:3]))
+        if missing or ahead or bad:
             flag = "  ⚠ 硬伤"
-            for label, items in (("缺会话", missing), ("多会话", extra)):
-                if items:
-                    hard.append("%s: %s %d 个（例 %s）" % (prof, label, len(items), items[:3]))
+            if missing:
+                hard.append("%s: 缺会话 %d 个（例 %s）" % (prof, len(missing), missing[:3]))
             if ahead:
                 hard.append("%s: 镜像条数多于活库 %d 个会话（例 %s）" % (prof, len(ahead), list(ahead)[:3]))
             if bad:
@@ -342,9 +349,10 @@ def main() -> int:
                 print("  · 轮内新建、下一轮会采（不计硬伤）：%s" % fl["fresh_in_round"][:10])
 
     report["hard_findings"] = hard
-    if any("多会话" in h for h in hard):
-        print("提示：镜像独有的会话（通常是外部事件删掉了活库记录，如 state.db 回滚/手工清理）"
-              "下一轮会从最新树 prune，但 git 历史仍保留；需要留档请先另存。")
+    if warns:
+        print("警告：%d 项（不算硬伤，附在此处备查）" % len(warns))
+        for w in warns[:20]:
+            print("  ·", w)
     print()
     print("== 合计（%.0fs）==" % (time.time() - t0))
     print("活库 %d 会话 / %d 消息 ⇒ 镜像 %d 会话 / %d 消息" % (grand["live_s"], grand["live_m"],
@@ -353,6 +361,7 @@ def main() -> int:
     print("硬伤：%d 项" % len(hard))
     for h in hard[:20]:
         print("  -", h)
+    report["warnings"] = warns
     if args.json:
         out = Path(args.json)
         out.parent.mkdir(parents=True, exist_ok=True)

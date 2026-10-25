@@ -19,6 +19,7 @@ FROM=""
 TO=""
 DRY=0
 SKIP_ARCHIVE=0
+BATCH_MB=800        # 分批推送的每批上限（MB）；set -u 下必须先给默认值
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -26,6 +27,7 @@ while [ $# -gt 0 ]; do
     --owner) OWNER="$2"; shift 2;;
     --from) FROM="$2"; shift 2;;
     --to) TO="$2"; shift 2;;
+    --batch-mb) BATCH_MB="$2"; shift 2;;
     --dry-run) DRY=1; shift;;
     --skip-archive) SKIP_ARCHIVE=1; shift;;
     -h|--help) sed -n '2,18p' "$0"; exit 0;;
@@ -71,9 +73,9 @@ echo "  前置 OK：local=remote=$L | 文件 $FILES / 会话件 $SESS / 树约 $
 if [ $DRY = 1 ]; then
   echo "== dry-run：不动任何东西。将要执行 =="
   echo "  1) git gc"
-  echo "  2) 造孤儿快照提交（单提交种子；dry-run 不生成）"
+  echo "  2) 分批造提交（seed_generation.sh；每批 ≤ ${BATCH_MB}MB，dry-run 不生成）"
   echo "  3) gh repo create $OWNER/$TO --private（不存在时）"
-  echo "  4) push 快照 → $TO:main"
+  echo "  4) 分批判 push → $TO:main（每批一推，避开单次 2GB 上限）"
   echo "  5) 浅克隆抽查（文件数 / 会话可解析）"
   echo "  6) 切换：branch refs/$FROM-archive / update main / origin=$TO / push / 写 local.json 的 repo"
   echo "  7) $([ $SKIP_ARCHIVE = 1 ] && echo '跳过归档' || echo "gh api -X PATCH repos/$OWNER/$FROM -f archived=true")"

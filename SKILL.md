@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.33
+version: 0.4.34
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]

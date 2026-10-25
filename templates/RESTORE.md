@@ -36,7 +36,9 @@ git checkout
 > B 的收益只在"只要一部分"时成立；要恢复全部档就用 A，别折腾稀疏。
 > 两者都可续跑：网络中断后在同目录 `git checkout` 或 `git fetch` 接着来。
 
-（克隆目录任意；下文以 `D:\hermes-backup` 为例。）
+（克隆目录任意；下文以 `D:/hermes-backup` 为例。）
+
+> **实测参考（2026-10-25，全新机器视角）**：`--depth 1` 克隆 3.3GB 树的仓，**393 秒**完成、落地 **4.5GB**（工作树 3.3GB + `.git` 1.2GB）；随后恢复一个档（proj-83，136 会话 / 27,249 条）**29 秒**、`verify_failed=0`。
 完成标准：`D:\hermes-backup\home-overlay\`、`profiles-overlay\`、`sessions\`、`tools\` 在位（B 方式下只保证你 set 的那些路径）。
 
 ## 2. 恢复文件层（配置/凭据/记忆/技能/cron/看板 + 各 bot 档）

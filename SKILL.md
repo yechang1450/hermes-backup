@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.41
+version: 0.4.42
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -48,7 +48,7 @@ metadata:
 | 路由回写（微信/QQ 续接） | `python <REPO>/tools/apply_routing.py` |
 | 桌面端收尾器 | `pwsh -NoProfile -File <REPO>/tools/finish_restore.ps1 -Repo <REPO>` |
 
-> **两个 `tools/` 别搞混**：`<REPO>/tools/` 只在**备份仓 clone 目录**里（每轮同步时由本技能 `scripts/` 复制过去，`D:\hermes-backup	ools\` 就是它）；**技能仓本身只有 `scripts/`，没有 `tools/`**。所以恢复类命令要在备份仓目录下跑，同步/审计/换代类命令用 `<SKILL>/scripts/`。
+> **两个 `tools/` 别搞混**：`<REPO>/tools/` 只在**备份仓 clone 目录**里（每轮同步时由本技能 `scripts/` 复制过去，`D:/hermes-backup/tools/` 就是它）；**技能仓本身只有 `scripts/`，没有 `tools/`**。所以恢复类命令要在备份仓目录下跑，同步/审计/换代类命令用 `<SKILL>/scripts/`。
 
 > 机器本地配置（镜像目录、同步默认仓名）放技能目录 `local.json` 的 `mirror` / `repo` 两项（不进任何仓库）；镜像目录默认自动探测，`--mirror` 可指定；镜像已有 origin 时仓名以 origin 为准（换代脚本会同时改写 origin 与 `local.json`，代码里不写死代名）。
 

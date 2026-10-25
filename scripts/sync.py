@@ -1099,6 +1099,15 @@ def ensure_repo() -> None:
     if not REMOTE_URL:
         raise RuntimeError("无法解析备份仓地址：请先 `gh auth login`，"
                            "或用 --owner <你的GitHub用户名> / --remote <URL> 指定")
+    # 新机常见坑：镜像是用户手工 clone 的（.git 已存在，走不到上面的 init 分支），
+    # 而本机没有配置 git 身份 ⇒ 第一次 commit 直接失败 "Please tell me who you are"。
+    # 这里补一次"缺什么补什么"（有全局身份时不动）。
+    if not git("config", "user.email", check=False).stdout.strip():
+        git("config", "user.email", GIT_EMAIL or f"{GH_OWNER or 'hermes-backup'}@users.noreply.github.com")
+        log("git 身份缺失：已补本仓 user.email")
+    if not git("config", "user.name", check=False).stdout.strip():
+        git("config", "user.name", GIT_NAME or GH_OWNER or "hermes-backup")
+        log("git 身份缺失：已补本仓 user.name")
     remotes = git("remote", check=False).stdout.split()
     if "origin" not in remotes:
         git("remote", "add", "origin", REMOTE_URL)

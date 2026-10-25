@@ -164,6 +164,11 @@
 
 ## 其它
 
+- **新机上第一次同步报「Please tell me who you are」**（0.4.62）：镜像是用户手工 clone 的（`.git` 已存在，
+  走不到 `git init` 分支），而本机没配 git 身份 ⇒ commit 失败。现在 `ensure_repo()` 会「缺什么补什么」：
+  本仓 `user.email` 缺 → 补 `<owner>@users.noreply.github.com`；`user.name` 缺 → 补 owner（有全局身份时不动）。
+  实测：清空全局配置的临时仓，调用后两项都补上。
+
 - **桌面端 Local Storage 被占用**：群聊/置顶数据只有桌面端退出后才能安全覆盖 → 收尾器处理。
 
 - **后台轮的完成通知会滞后且成批到达**：通知里的命令输出可能对应**已被后续轮取代**的旧轮（失败也可能早被补推/修复）。处理前先对时——读 `state/hb-sync-runs.jsonl` 最后一行的轮次时间与 `state/hb-sync-health.json` 的 `updated_at`；旧通知若已被后继轮补齐，只记一笔、不重跑、不回滚已改配置。

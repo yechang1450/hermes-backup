@@ -753,6 +753,11 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
     runner, helper = scripts_dir / "run_in_runtime.py", scripts_dir / "export_all_profiles.py"
     rawdir = SCRATCH / "bulk-export"
     bulk_ok = runner.is_file() and helper.is_file()
+    if not bulk_ok:
+        # 静默退化很贵：逐档 CLI 比单进程批量慢 3–5 倍（实测 567s → 900s+），而且没人会注意。
+        # 2026-10-26 实案：运行目录缺 export_all_profiles.py，一连几轮都在走慢路径且无任何提示。
+        miss = [x.name for x in (runner, helper) if not x.is_file()]
+        log(f"!! 批量导出不可用（缺 {miss}，目录 {scripts_dir}）：本轮回退逐档 CLI，会慢 3–5 倍")
     if bulk_ok:
         shutil.rmtree(rawdir, ignore_errors=True)
         t0 = time.time()

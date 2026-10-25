@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.53
+version: 0.4.54
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -139,6 +139,9 @@ metadata:
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
   （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
   且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
+- **运行目录必须齐 7 个文件**（0.4.54）：`HERMES_HOME/scripts/` 里要同时有 `sync.py`、`session_layout.py`、`run_in_runtime.py`、`export_all_profiles.py`、`hb-sentinel.py`、`hb-autosync.py`、`restore_sessions.py`。
+  缺 `export_all_profiles.py` 会让同步**静默退化**成逐档 CLI（慢 3–5 倍）；现已在该情形打印 `!! 批量导出不可用（缺 …）`。
+  自查一条命令：`for f in sync.py session_layout.py run_in_runtime.py export_all_profiles.py hb-sentinel.py hb-autosync.py restore_sessions.py; do test -f "$HERMES_HOME/scripts/$f" || echo 缺 $f; done`
 - **批量导出部分失败不再整批作废**（0.4.53）：`export_all_profiles` 任一档报错会让 rc=1，原实现直接把整批判失败、
   回退成「逐档 CLI 全量重导」（实测一次单档失败要多花 ~10 分钟）；现在按**缺哪些文件**判定，已产出的档直接复用（`bulk-reuse`），只对缺失档跑 CLI。
 - **私有性检查默认 fail-closed**（0.4.52，2026-10-26）：原实现遇到「属主解析不到 / gh 不可用 / 查询失败」一律**跳过检查照推**，

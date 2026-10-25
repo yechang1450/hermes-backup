@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.54
+version: 0.4.55
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -139,11 +139,13 @@ metadata:
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
   （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
   且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
-- **运行目录必须齐 7 个文件**（0.4.54）：`HERMES_HOME/scripts/` 里要同时有 `sync.py`、`session_layout.py`、`run_in_runtime.py`、`export_all_profiles.py`、`hb-sentinel.py`、`hb-autosync.py`、`restore_sessions.py`。
-  缺 `export_all_profiles.py` 会让同步**静默退化**成逐档 CLI（慢 3–5 倍）；现已在该情形打印 `!! 批量导出不可用（缺 …）`。
-  自查一条命令：`for f in sync.py session_layout.py run_in_runtime.py export_all_profiles.py hb-sentinel.py hb-autosync.py restore_sessions.py; do test -f "$HERMES_HOME/scripts/$f" || echo 缺 $f; done`
-- **批量导出部分失败不再整批作废**（0.4.53）：`export_all_profiles` 任一档报错会让 rc=1，原实现直接把整批判失败、
-  回退成「逐档 CLI 全量重导」（实测一次单档失败要多花 ~10 分钟）；现在按**缺哪些文件**判定，已产出的档直接复用（`bulk-reuse`），只对缺失档跑 CLI。
+- **两份 sync.py 不要分叉**（0.4.55）：cron 的 `hb-sentinel.py` / `hb-autosync.py` 放在 `HERMES_HOME/scripts/`（cron 只能放这里），
+  但它们**指向技能目录里的 `sync.py` 正本**。所以：
+  · 技能目录 `scripts/` 要齐 `sync.py`、`session_layout.py`、`run_in_runtime.py`、`export_all_profiles.py`、`restore_sessions.py`（缺 `export_all_profiles.py`
+    会让批量导出静默退化，比正常慢 3–5 倍；现已打印 `!! 批量导出不可用（缺 …）`）；
+  · `HERMES_HOME/scripts/` 只需 `hb-sentinel.py` + `hb-autosync.py`；若那里也放了一份 `sync.py`，**它必须是转调壳**而不是副本
+    （2026-10-26 实案：副本缺 helper，手动轮走慢路径而 cron 正常，很难发现）。
+  · 自查：`python "$HERMES_HOME/scripts/sync.py" --help` 能出 usage；`ls "$HERMES_HOME/skills/hermes-cloud-backup/scripts/export_all_profiles.py"` 存在。
 - **私有性检查默认 fail-closed**（0.4.52，2026-10-26）：原实现遇到「属主解析不到 / gh 不可用 / 查询失败」一律**跳过检查照推**，
   而实测有 3 轮就是这样推上去的（日志 `!! 未解析到仓库属主，跳过私有检查`）。这个仓装着凭据与私人对话，检查没做成就不该推——
   现在改为**拒绝推送**，确需在无法验证的环境里推要显式加 `--allow-unverified-privacy`。

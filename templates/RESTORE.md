@@ -72,6 +72,9 @@ python D:\hermes-backup\tools\run_in_runtime.py D:\hermes-backup\tools\restore_s
 python D:\hermes-backup\tools\apply_routing.py
 ```
 - 把 `supplement\gateway_routing.json` 写回本机 `state.db` 的 `gateway_routing` 表（scope 自动改成本机路径）。
+- **前置**：主档会话必须先恢复（第 3 步用 `--all` 或至少 `--profile main` 跑过），否则 `<HERMES_HOME>\state.db` 还不存在，
+  本步会报「目标库不存在」——这是正常的顺序依赖，不是故障（2026-10-26 演练实测）。
+- 先 `--dry-run` 看 `new/updated/unchanged`，再真写；重复执行幂等（第二次应全 unchanged）。
 - 若报 database is locked：等桌面端退出后的空窗期重跑（收尾器阶段）。
 - 完成标准：输出 `applied: new=N updated=N unchanged=N`。
 

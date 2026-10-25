@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.48
+version: 0.4.49
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -139,6 +139,13 @@ metadata:
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
   （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
   且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
+- **整档删除必须显式授权**（0.4.49，2026-10-26 代码审查发现）：`prune_stale` 原实现「keep 里没有的档就 rmtree」——
+  某档导出失败/零产出时会把它**整档历史清掉**再 commit+push。现在签名是 `prune_stale(root, keep, allow_delete=…)`，
+  只有「已确认活库里不存在的档」才允许整档删除，其余只清目录内多余文件；导出无产出时该档本轮受保护。回归＝`test-prune-protect.py`（S1–S3）。
+- **快照回退不能回到 copy_file**（0.4.49）：`copy_file` 对 `.db` 分支进 `snapshot_sqlite`，而快照失败又回退 `copy_file` ⇒ 互递归
+  （实测喂坏库递归到深层后返回 False、目标文件根本没写）。回退改为 `shutil.copy2 + os.replace`。回归＝`test-prune-protect.py` S4（0.03s、文件落地）。
+- **总量安全闸跟着换代阈值走**（0.4.49）：`SIZE_GUARD_TOTAL` 原固定 4GB，而换代阈值已上调到 12GB ⇒ 同步会先于换代在 4GB 停摆。
+  现在 `SIZE_GUARD_TOTAL = (ROTATE_AT_GB + 1) GB`，即先换代、再撞闸。
 - **路由表按 session_key 去重**（0.4.47）：`gateway_routing` 里同一 key 可能在多个 scope（历史 HERMES_HOME 路径）下各有一行，
   原样导出会让恢复端按「目标机 scope」逐行 INSERT 撞 UNIQUE —— 实测本机 50 行 / 40 key，`apply_routing.py` **直接失败**（事务回滚、零写入）。
   现在 `dump_routing()` 去重（优先本机 scope、其次最新 `updated_at`，report 里 `routing_rows_raw` 记原始行数），

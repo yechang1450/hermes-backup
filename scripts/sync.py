@@ -158,7 +158,8 @@ PUSH_TIMEOUT = 1500                     # 推送预算：一次性大重排（�
 SIZE_GUARD_FILE = 95 * 1024 * 1024      # 单文件上限
 STABILIZE_MIN_BYTES = 5 * 1024 * 1024   # 只对「大会话」做尾部稳定化：小文件整份重写无所谓，
                                         # 但大会话每轮整份重写会拖垮 git 增量（见 session_layout.py）
-SIZE_GUARD_TOTAL = 4096 * 1024 * 1024   # 镜像总量上限（v3 会话不压缩，基数更大）
+ROTATE_AT_GB = 12                    # 换代阈值（与 references/generations.md 一致）
+SIZE_GUARD_TOTAL = (ROTATE_AT_GB + 1) * 1024 * 1024 * 1024   # 安全闸：比换代阈值高 1GB，先换代再撞闸（原来固定 4096MB，会先于 12GB 换代把同步中止，2026-10-26 审查发现）
 PART_MAX = 12 * 1024 * 1024             # 会话分片阈值（0.4.26 由 45MB 下调）。
                                         # 尾部稳定化后，每轮只有"变动的那个分片"重写 ⇒ 阈值越小、单轮重写越少
                                         # （实测 45MB 时稳态 249MB/轮，其中 208MB 全是 10 个活动会话的末片）。
@@ -362,10 +363,16 @@ def snapshot_sqlite(src: Path, dst: Path) -> bool:
         os.replace(tmp, dst)
         return True
     except Exception as e:
-        log(f"!! 快照失败 {src.name}: {e!r}（回退普通拷贝）")
+        # 注意：这里**不能**回退到 copy_file —— copy_file 对 .db 又分支回 snapshot_sqlite，
+        # 两者互递归（2026-10-26 实测：坏库触发 497 层递归后返回 False，目标文件根本没写）。
+        log(f"!! 快照失败 {src.name}: {e!r}（回退普通拷贝 shutil.copy2）")
         try:
-            return copy_file(src, dst)
-        except Exception:
+            tmp = dst.with_name(dst.name + ".cptmp")
+            shutil.copy2(src, tmp)
+            os.replace(tmp, dst)
+            return True
+        except Exception as e2:
+            log(f"!! 普通拷贝也失败 {src.name}: {e2!r}")
             return False
 
 
@@ -663,15 +670,25 @@ def split_to_session_parts(raw: Path, outdir: Path) -> dict:
     return stats
 
 
-def prune_stale(sessions_root: Path, keep: dict[str, set[str]]) -> None:
+def prune_stale(sessions_root: Path, keep: dict[str, set[str]],
+                allow_delete: frozenset[str] | set[str] = frozenset()) -> None:
     """删掉本轮导出集合之外的旧文件（会话已删除 / 档已不存在），其余原样保留、mtime 不动。
-    「不重写未变文件」的前提是目录不再整清空——收敛任务由这里承担。"""
+
+    「不重写未变文件」的前提是目录不再整清空——收敛任务由这里承担。
+
+    **删除整档必须显式授权**（2026-10-26 改）：`keep` 里没有的档，只有列在 `allow_delete`
+    （＝已确认活库里不存在的档）才 rmtree；否则一律保留。原实现是「没登记就删」，一旦某档导出
+    失败/零产出就会把整档历史清掉再 commit+push。
+    """
     removed = 0
     for d in sorted(sessions_root.iterdir()):
         if not d.is_dir():
             continue
         names = keep.get(d.name)
         if names is None:
+            if d.name not in allow_delete:
+                log(f"sessions 清理：跳过 {d.name}/（本轮未导出，保留现有文件）")
+                continue
             shutil.rmtree(d, ignore_errors=True)
             removed += 1
             continue
@@ -703,6 +720,11 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             raw.unlink()
             entry.update(stats)
             keep[name] = set(entry.pop("_files", []))
+        else:
+            entry["ok"] = False
+            entry["error"] = "no_raw"
+            d = sessions_root / name
+            keep[name] = {f.name for f in d.iterdir() if f.is_file()} if d.is_dir() else set()
         report["exports"][name] = entry
         log(f"export {name}: sessions={entry['sessions']} files={entry['files']} "
             f"raw={entry['bytes_total']/1048576:.1f}MB max={entry['max']/1048576:.1f}MB")
@@ -754,7 +776,8 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
                 for name in wanted:
                     add_entry(name, rawdir / f"{name}.jsonl", {"via": "bulk"})
                 shutil.rmtree(rawdir, ignore_errors=True)
-                prune_stale(sessions_root, keep)
+                existing = {x.name for x in sessions_root.iterdir() if x.is_dir()}
+                prune_stale(sessions_root, keep, allow_delete=existing - set(wanted))
                 return
 
     # ── 路径 B（回退）：逐档 hermes CLI（v3.2 行为，原样保留）──
@@ -777,6 +800,15 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             raw.unlink()
             entry.update(stats)
             keep[name] = set(entry.pop("_files", []))
+        else:
+            # 导出失败或零产出：**绝不能**把该档已有历史当成"活库已删"清掉。
+            # 原实现这里不登记 keep ⇒ prune_stale 把 sessions/<档> 整目录 rmtree，然后照常 commit+push
+            #（2026-10-26 代码审查实测发现）。改为：该档本轮受保护，清点现有文件原样保留。
+            entry["ok"] = False
+            entry["error"] = "no_raw"
+            d = sessions_root / name
+            keep[name] = {f.name for f in d.iterdir() if f.is_file()} if d.is_dir() else set()
+            log(f"!! export {name}: 无产出（rc={p.returncode}）——该档本轮不 prune，保留现有 {len(keep[name])} 个文件")
         if p.returncode != 0 or skipped:
             entry["tail"] = out.strip()[-600:]
         report["exports"][name] = entry
@@ -793,7 +825,8 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             log(f"export {d.name}: 跳过（目录存在但 profile 未注册）")
             continue
         do_one(d.name, d.name)
-    prune_stale(sessions_root, keep)
+    existing = {x.name for x in sessions_root.iterdir() if x.is_dir()}
+    prune_stale(sessions_root, keep, allow_delete=existing - set(wanted))
 
 
 def dump_routing(report: dict) -> None:

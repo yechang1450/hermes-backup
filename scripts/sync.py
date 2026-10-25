@@ -1188,10 +1188,13 @@ def main() -> int:
     except Exception:
         pass
     ap = argparse.ArgumentParser()
-    ap.add_argument("--collect-only", action="store_true")
-    ap.add_argument("--skip-exports", action="store_true")
-    ap.add_argument("--no-push", action="store_true")
-    ap.add_argument("--message", default="")
+    ap.add_argument("--collect-only", action="store_true",
+                    help="只做采集（覆盖层/看板/工具镜像），不 commit/push；仍会导出会话，要连导出都跳过多加 --skip-exports")
+    ap.add_argument("--skip-exports", action="store_true",
+                    help="跳过会话导出（镜像里已有的会话文件保持不动）")
+    ap.add_argument("--no-push", action="store_true",
+                    help="只提交到本地，不推送远端")
+    ap.add_argument("--message", default="", help="自定义提交信息（默认 sync <时间> host=<主机>）")
     ap.add_argument("--mirror", default="", help="镜像工作区目录（默认自动探测）")
     ap.add_argument("--owner", default="", help="GitHub 属主（默认从镜像 remote 或 gh 登录解析）")
     ap.add_argument("--repo-name", default="",

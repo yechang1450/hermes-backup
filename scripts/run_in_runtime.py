@@ -40,6 +40,10 @@ def main() -> int:
     sys.path.insert(0, str(root))
     from hermes_cli._launchers import runtime_command  # noqa: E402
 
+    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
+        print("用法: python run_in_runtime.py <脚本路径> [脚本参数…]\n"
+              "  在 Hermes 官方运行时里执行指定脚本（缺 ruamel 等运行期依赖时用这个入口）。")
+        return 0
     script = str(Path(sys.argv[1]).resolve())
     rest = sys.argv[2:]
     cmd = runtime_command(root, args=[script, *rest], code=_RUN_CODE, home=home)

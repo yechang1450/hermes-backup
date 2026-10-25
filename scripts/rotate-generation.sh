@@ -54,7 +54,9 @@ echo "  归档旧仓  : $([ $SKIP_ARCHIVE = 1 ] && echo 否 || echo 是)"
 DIRT=$(git -C "$MIRROR" status --porcelain | grep -vE '^( M|M |A |\?\?) (meta/|logs/)' || true)
 [ -z "$DIRT" ] || { echo "!! 工作树有意外改动："; echo "$DIRT" | head -8; exit 1; }
 [ ! -e "$LOCK" ] || { echo "!! 已有同步在跑（锁存在 $LOCK）"; exit 1; }
-L=$(git -C "$MIRROR" rev-parse HEAD); R=$(git -C "$MIRROR" ls-remote origin HEAD | cut -c1-40)
+L=$(git -C "$MIRROR" rev-parse HEAD)
+# 用 refs/heads/main（HEAD 在部分传输/本地路径下可能不被广播，会误判"本地 != 远端"）
+R=$(git -C "$MIRROR" ls-remote origin refs/heads/main 2>/dev/null | cut -c1-40)
 [ "$L" = "$R" ] || { echo "!! 本地($L) != 远端($R)，先让下一轮同步收口"; exit 1; }
 FILES=$(git -C "$MIRROR" ls-files | wc -l)
 SESS=$(git -C "$MIRROR" ls-files 'sessions/*' | wc -l)

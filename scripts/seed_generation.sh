@@ -78,7 +78,14 @@ N_SEED=$(git -C "$MIRROR" ls-tree -r "$PREV" --name-only | wc -l)
 N_MIRROR=$(git -C "$MIRROR" ls-files | wc -l)
 [ "$N_SEED" = "$N_MIRROR" ] || { echo "!! 种子文件数($N_SEED) != 镜像文件数($N_MIRROR)"; exit 1; }
 
-R=$(git -C "$MIRROR" ls-remote "$URL" HEAD | cut -c1-40)
+# 用 refs/heads/main 而不是 HEAD：本地路径/部分传输下 HEAD 不被广播，会返回空（2026-10-25 实案：
+# 5 批推送全成功，却在这里误报"远端 HEAD() != 最后提交"并退出 1）
+R=""
+for _try in 1 2 3; do
+  R=$(git -C "$MIRROR" ls-remote "$URL" refs/heads/main 2>/dev/null | cut -c1-40)
+  [ -n "$R" ] && break
+  sleep 2
+done
 [ "$R" = "$PREV" ] || { echo "!! 远端 HEAD($R) != 最后提交($PREV)"; exit 1; }
 echo "  文件数一致：$N_SEED / 批次数 $N"
 echo "SEED-OK $PREV"

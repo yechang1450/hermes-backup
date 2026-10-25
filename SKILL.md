@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.34
+version: 0.4.35
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -131,6 +131,8 @@ metadata:
 - **自定义拷贝路径必须登记 `_COPIED`，否则会被 prune 当残留删掉**（0.4.30，2026-10-25 实案）：`copy_kanban_dbs` 直接调 `snapshot_sqlite()`（绕过了 `copy_file` 的登记），结果 `prune_unvisited` 把 11 个板库当"本轮未访问"全删了——镜像是空的、且没有任何报错。凡是不走 `copy_file()` 的写镜像路径，都必须 `_COPIED.add(str(目标路径))`。回归＝`test-kanban-scope.py` 的 S5（copy 后跑 prune，断言文件仍在）。
 - **换代必须分批推送（2GB 上限）**（0.4.33）：`scripts/seed_generation.sh` 用临时 index 逐批 `add -f → write-tree → commit-tree → push`（每批 ≤800MB），最后校验文件数与树；`rotate-generation.sh` 已改为调它。
   三个必踩坑：① `read-tree --empty` 不带 `GIT_INDEX_FILE` 会**清空镜像真实 index**；② `git ls-files -z | python - <<'PY'` 里 heredoc 会顶掉管道 stdin（分批恒为 0）；③ 临时 index 是空的，所有文件都"未跟踪"，仓库 `.gitignore` 会让 `add` 失败 ⇒ 必须 `-f`。
+- **校验远程状态要用具体 ref，不要用 `HEAD`**（0.4.35）：`git ls-remote <本地路径> HEAD` 在本地传输下返回空，
+  曾把「5 批全部推送成功」误判成失败（exit 1）。一律取 `refs/heads/main`（必要处加重试）。
 - **容量判据只看 `gh api … --jq .size`**：`churn-report.py` 是「新增 blob 字节」，不是仓体积增长（整份重写的文件 git 仍会 delta）。实测同一时段 churn 130–155MB/轮，而远端只涨 ≈14MB/小时。
 - **kanban 备份必须严守白名单**（0.4.29）：只备 `boards/<board>/kanban.db`（含 `boards/_archived/<board>/kanban.db`）与顶层 `kanban.db`。旧实现用 `rglob("*.db")`，把任务工作区/证据里的 73 个 `school80.db` 之类也备上了（镜像 84 个 db / 36MB），违背「工作区属过程记录」的政策、每轮还多快照 70+ 个无关库。回归＝`test-kanban-scope.py`（4 项）。**改动后下一轮会自动 prune 掉多备的工作区库。**
 - **末片上限方案已被实测否决（0.4.31 回退）**：把末片压到 3MB 看似能减少尾部重写，实测反而更差——

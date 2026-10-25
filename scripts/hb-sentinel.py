@@ -60,6 +60,30 @@ def mirror_meta() -> Path:
 SYNC_STATE = mirror_meta()
 
 
+def lock_is_live() -> bool:
+    """同步锁是否真的有人持有：文件存在但持有进程已死 ⇒ 视为没在跑。
+
+    崩溃残留的锁不该永久挡住哨兵——原实现只看 `SYNC_LOCK.exists()`，
+    一旦某轮被杀留下锁，哨兵就再也不会触发，直到人工删锁（2026-10-26 审查发现）。
+    """
+    try:
+        txt = SYNC_LOCK.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    pid = 0
+    try:
+        pid = int(json.loads(txt)["pid"]) if txt.startswith("{") else int(txt)
+    except Exception:
+        return True          # 读不懂就当它在跑（保守，宁可少跑一轮）
+    if pid <= 0:
+        return True
+    try:
+        import psutil
+        return bool(psutil.pid_exists(pid))
+    except Exception:
+        return True
+
+
 def load_state() -> dict:
     try:
         return json.loads(STATE_FILE.read_text(encoding="utf-8"))
@@ -257,14 +281,14 @@ def main() -> int:
         print("quiet_from:", st.get("quiet_from"), "| synced_this_quiet:", st.get("synced_this_quiet"))
         print("last_sync_age:", ("%.0fs" % age) if age is not None else "n/a",
               "| fresh(20m):", age is not None and age < MIN_SYNC_GAP,
-              "| sync_running:", SYNC_LOCK.exists())
+              "| sync_running:", lock_is_live())
         return 0
 
     st = load_state()
     now = time.time()
     gw = gateway_start()
     busy, newest = busy_signals()
-    sync_running = SYNC_LOCK.exists()
+    sync_running = lock_is_live()
     age = last_sync_age()
     fresh = age is not None and age < MIN_SYNC_GAP
     trigger = ""
@@ -295,8 +319,15 @@ def main() -> int:
 
     # ⑤ 超期兜底：周期 cron 因重启/漂移错过时（2026-10-25 实案：重启把 05:57 顺延到 06:29），
     # 只要超过 2.5 小时没有成功轮且当下没在同步，就补一轮。
-    if not trigger and not sync_running and not fresh and age is not None and age >= OVERDUE_SECONDS:
-        trigger = "overdue"
+    if not trigger and not sync_running and not fresh:
+        if age is not None and age >= OVERDUE_SECONDS:
+            trigger = "overdue"
+        elif age is None:
+            # 从未成功过（没有任何 sync-state）且上次触发已超过 2.5h ⇒ 说明那轮失败了、状态没落地。
+            # 没有这条时：首轮失败后若一直安静，哨兵就再也不重试（2026-10-26 审查发现）。
+            last_try = st.get("last_trigger_ts") or 0
+            if last_try and (now - last_try) >= OVERDUE_SECONDS:
+                trigger = "overdue-no-state"
 
     ok = True
     if trigger:

@@ -121,9 +121,26 @@ def main() -> int:
     print("== S5 同步进行中（锁在）→ 不触发 ==")
     h, m = make_home("s5", msg_age=1800); set_last_sync(m, 3600)
     (h / "state" / "hb-sentinel-state.json").write_text(json.dumps({"gw_start": "A"}), encoding="utf-8")
-    (h / "state" / "hermes-backup-sync.lock").write_text("999999", encoding="utf-8")
+    (h / "state" / "hermes-backup-sync.lock").write_text(json.dumps({"pid": os.getpid()}), encoding="utf-8")
     p, st, spawned = run(h, m)
     ok_all &= check("不触发", st.get("last_trigger_tag") is None and not spawned, f"tag={st.get('last_trigger_tag')}")
+
+    print("== S5b 残留死锁（持有进程已死）→ 不挡哨兵，照常触发 ==")
+    h, m = make_home("s5b", msg_age=1800); set_last_sync(m, 3600)
+    (h / "state" / "hb-sentinel-state.json").write_text(json.dumps({"gw_start": "A"}), encoding="utf-8")
+    (h / "state" / "hermes-backup-sync.lock").write_text(json.dumps({"pid": 999999}), encoding="utf-8")
+    p, st, spawned = run(h, m)
+    ok_all &= check("死锁不阻塞（触发 quiet-5min）", st.get("last_trigger_tag") == "quiet-5min" and spawned,
+                    f"tag={st.get('last_trigger_tag')}")
+
+    print("== S10 从未成功过 + 上次触发已超 2.5h → 补一轮（overdue-no-state）==")
+    h, m = make_home("s10", msg_age=60, busy=True); set_last_sync(m, None)
+    (h / "state" / "hb-sentinel-state.json").write_text(json.dumps(
+        {"gw_start": "A", "quiet_from": time.time() - 60, "synced_this_quiet": True,
+         "last_trigger_ts": time.time() - 3 * 3600}), encoding="utf-8")
+    p, st, spawned = run(h, m)
+    ok_all &= check("触发 overdue-no-state", st.get("last_trigger_tag") == "overdue-no-state" and spawned,
+                    f"tag={st.get('last_trigger_tag')}")
 
     print("== S6 长静默（≥1h）结束、恢复活动 ④ ==")
     h, m = make_home("s6", msg_age=60, busy=True); set_last_sync(m, 3600)

@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.57
+version: 0.4.58
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -151,6 +151,11 @@ metadata:
   现在改为**拒绝推送**，确需在无法验证的环境里推要显式加 `--allow-unverified-privacy`。
 - **远程 URL 解析要容忍端口**（0.4.52）：`ssh://git@ssh.github.com:443/owner/repo.git`（备用通道）原正则把 `:443` 当 owner 段、解析失败，
   于是属主为空 → 私有性检查被跳过。正则已加 `(?::\d+)?`；实测 5 种 URL 形态（ssh+端口/ssh/https/.git 有无）全部解析正确。
+- **哨兵看锁的「活性」而不是「存在」**（0.4.58，2026-10-26 审查发现）：原来只要 `SYNC_LOCK` 文件在就跳过触发——
+  某一轮被杀留下锁后，哨兵就再也不会补跑（直到人工删锁）。现在读锁里的 pid，持有进程已死 ⇒ 视为没在跑，照常触发
+  （读不懂就当在跑，保守）。回归＝`test-hb-sentinel.py` 的 S5（活 pid 不触发）/ S5b（死 pid 不阻塞）。
+- **首轮失败后不会永远不再重试**（0.4.58）：`overdue` 原要求「有上次成功时间」，从未成功过时 `age=None` 就永远不触发；
+  现在补 `overdue-no-state`：从无成功记录且上次触发已超 2.5h ⇒ 再补一轮。回归＝S10。
 - **恢复时「0 个会话」不再算成功**（0.4.56，2026-10-26 实测踩到）：`--source` 指错目录时原来打印一行「源目录里没有会话文件」
   然后 `imported=0` 以 **rc=0** 退出，等于什么都没恢复却报告成功。现在空档目录 → **rc=2** + 明确提示，确属预期加 `--allow-empty`；
   源根目录不存在仍 rc=1。另实测：坏 JSON 分片不会崩，计入 `failed` 并让整轮 rc=3（好档照常导入）。

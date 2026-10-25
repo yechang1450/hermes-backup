@@ -51,45 +51,70 @@ for i, b in enumerate(batches, 1):
 print('  分批：%d 批 / %d 文件 / 每批 ≤ %dMB' % (len(batches), len(sized), batch_mb))
 PY
 
-PREV=""
+# ── 第一遍：只算每批的树（不提交），用于"续跑/已就位"判定 ──
+TREES=()
 N=0
-# 确定性：提交时间取镜像最后一次提交的时间，消息里不带时间戳 ⇒ 同样的输入重跑会得到同样的 commit sha，
-# 于是「重跑」= no-op（原来是每次新 sha，重跑必 non-fast-forward，与 docstring 的"幂等续跑"不符）。
+GIT_INDEX_FILE="$IDX" git -C "$MIRROR" read-tree --empty
+for BF in "$BATCHDIR"/batch-*.txt; do
+  N=$((N + 1))
+  GIT_INDEX_FILE="$IDX" git -C "$MIRROR" add -f --pathspec-from-file="$BF"
+  TREES+=("$(GIT_INDEX_FILE="$IDX" git -C "$MIRROR" write-tree)")
+done
+[ "$N" -gt 0 ] || { echo "!! 没有任何批次"; exit 1; }
+FINAL_TREE="${TREES[$((N - 1))]}"
+
+R_SHA=$(git -C "$MIRROR" ls-remote "$URL" refs/heads/main 2>/dev/null | cut -f1)
+R_TREE=""
+if [ -n "$R_SHA" ]; then
+  R_TREE=$(git -C "$MIRROR" rev-parse "$R_SHA^{tree}" 2>/dev/null || true)
+fi
+if [ -n "$R_TREE" ] && [ "$R_TREE" = "$FINAL_TREE" ]; then
+  echo "  远端已是完整树（无需推送）"
+  echo "  文件数一致：$(git -C "$MIRROR" ls-tree -r "$R_SHA" --name-only | wc -l) / 批次数 $N"
+  echo "SEED-OK $R_SHA"
+  exit 0
+fi
+# 远端若是"别的形状"（既不是某批的树、也不是完整树）⇒ 拒绝覆盖，避免把完整备份回退成半棵树
+if [ -n "$R_TREE" ]; then
+  MATCH=0
+  for T in "${TREES[@]}"; do [ "$T" = "$R_TREE" ] && MATCH=1; done
+  if [ "$MATCH" = 0 ]; then
+    echo "!! 远端 main 的树既不是任何一批、也不是完整树（$R_SHA）——拒绝覆盖，请人工核对"
+    exit 1
+  fi
+fi
+
+# ── 第二遍：从"远端已有的那批"之后继续推 ──
+PREV="${R_SHA:-}"
 SRC_DATE="$(git -C "$MIRROR" log -1 --format=%cI 2>/dev/null || true)"
 [ -n "$SRC_DATE" ] || SRC_DATE="2000-01-01T00:00:00+00:00"
 export GIT_AUTHOR_DATE="$SRC_DATE" GIT_COMMITTER_DATE="$SRC_DATE"
+
+i=0
 for BF in "$BATCHDIR"/batch-*.txt; do
-  N=$((N + 1))
-  if [ -z "$PREV" ]; then GIT_INDEX_FILE="$IDX" git -C "$MIRROR" read-tree --empty; fi
-  # 注意必须 -f：临时 index 是空的，所有文件对它而言都是"未跟踪"，仓库 .gitignore 会把
-# 某些已被跟踪的文件（如 skills/*/local.json）判为忽略并让 add 失败（2026-10-25 实案：第 5 批直接死）
-GIT_INDEX_FILE="$IDX" git -C "$MIRROR" add -f --pathspec-from-file="$BF"
-  T=$(GIT_INDEX_FILE="$IDX" git -C "$MIRROR" write-tree)
+  T="${TREES[$i]}"
+  i=$((i + 1))
+  if [ -n "$R_TREE" ] && [ "$R_TREE" = "$T" ]; then
+    echo "  批 $i：远端已是同一棵树（续跑跳过）"
+    continue
+  fi
   if [ -z "$PREV" ]; then
-    C=$(git -C "$MIRROR" commit-tree "$T" -m "gen snapshot [batch $N]")
+    C=$(git -C "$MIRROR" commit-tree "$T" -m "gen snapshot [batch $i]")
   else
-    C=$(git -C "$MIRROR" commit-tree "$T" -p "$PREV" -m "seed batch $N")
+    C=$(git -C "$MIRROR" commit-tree "$T" -p "$PREV" -m "seed batch $i")
   fi
   T0=$(date +%s)
-  if ! git -C "$MIRROR" push -q "$URL" "$C:refs/heads/main" 2>"$BATCHDIR/push-$N.err"; then
-    R_SHA=$(git -C "$MIRROR" ls-remote "$URL" refs/heads/main 2>/dev/null | cut -f1)
-    R_TREE=$(git -C "$MIRROR" rev-parse "$R_SHA^{tree}" 2>/dev/null || true)
-    if [ -n "$R_SHA" ] && [ "$R_TREE" = "$T" ]; then
-      echo "  批 $N：远端已是同一棵树（重跑 no-op）"
-    else
-      echo "!! 批 $N 推送失败：$(head -2 "$BATCHDIR/push-$N.err")"
-      exit 1
-    fi
-  else
-    echo "  批 $N：推送 $(($(date +%s) - T0))s，提交 $C"
+  if ! git -C "$MIRROR" push -q "$URL" "$C:refs/heads/main" 2>"$BATCHDIR/push-$i.err"; then
+    echo "!! 批 $i 推送失败：$(head -2 "$BATCHDIR/push-$i.err")"
+    exit 1
   fi
+  echo "  批 $i：推送 $(($(date +%s) - T0))s，提交 $C"
   PREV="$C"
 done
-[ -n "$PREV" ] || { echo "!! 没有任何批次"; exit 1; }
+[ -n "$PREV" ] || { echo "!! 没有任何提交"; exit 1; }
+COMMIT="$PREV"
 
-# 校验：分批推进后的索引树里，文件数必须与镜像索引一致
-# （不用镜像真实 index 做 write-tree：那会碰用户的 index，且 3GB 树上很慢）
-N_SEED=$(git -C "$MIRROR" ls-tree -r "$PREV" --name-only | wc -l)
+N_SEED=$(git -C "$MIRROR" ls-tree -r "$COMMIT" --name-only | wc -l)
 N_MIRROR=$(git -C "$MIRROR" ls-files | wc -l)
 [ "$N_SEED" = "$N_MIRROR" ] || { echo "!! 种子文件数($N_SEED) != 镜像文件数($N_MIRROR)"; exit 1; }
 
@@ -101,6 +126,6 @@ for _try in 1 2 3; do
   [ -n "$R" ] && break
   sleep 2
 done
-[ "$R" = "$PREV" ] || { echo "!! 远端 HEAD($R) != 最后提交($PREV)"; exit 1; }
+[ "$R" = "$COMMIT" ] || { echo "!! 远端 main($R) != 最后提交($COMMIT)"; exit 1; }
 echo "  文件数一致：$N_SEED / 批次数 $N"
-echo "SEED-OK $PREV"
+echo "SEED-OK $COMMIT"

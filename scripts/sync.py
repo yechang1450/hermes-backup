@@ -686,7 +686,12 @@ def split_to_session_parts(raw: Path, outdir: Path) -> dict:
             if len(ln) > STABILIZE_MIN_BYTES:
                 ln = stabilize_line(ln)
             m = SESSION_ID_RE.search(ln[:16384])
-            sid = m.group(1).decode("ascii", "replace") if m else f"line{idx:04d}"
+            if m:
+                sid = m.group(1).decode("ascii", "replace")
+            else:
+                # 取不到 id（不在前 16KB）：用内容哈希而不是行号——行号会随"某会话新增/删除"整体错位，
+                # 导致后续所有这类文件每轮改名重存（2026-10-26 改）。
+                sid = "h" + hashlib.sha1(ln[:4096]).hexdigest()[:16]
             dup = seen.get(sid, 0)
             seen[sid] = dup + 1
             if dup:

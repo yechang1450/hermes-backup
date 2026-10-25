@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.31
+version: 0.4.32
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -109,6 +109,15 @@ metadata:
 4. 路由回写（微信/QQ 线程 → 会话映射）。
 5. 桌面端收尾器（**唯一需要用户配合的一步：完全退出桌面端一次**；收尾器自动完成剩余拷贝、重启网关、重新拉起桌面端）。
 6. 重启后按 RESTORE.md 的验收清单逐项核对。
+
+
+### 已决事项（2026-10-25，勿再当"待拍板"重提）
+- **镜像独有的孤儿会话不导回活库**：活库那边删掉是既成状态，备份的职责是"能随时取回"，不是替主人改会话列表。
+  取回路径＝`references/../scripts/restore_sessions.py --source <文件>`（`RESTORE.md` 第 8 节），需要哪条取哪条。
+- **网关计划任务不加"进程死了自动拉"**：官方任务无重启策略是设计；实测加 `TimeTrigger` 每 10 分钟拉一次会空烧
+  （冷启动 300–900s，10 小时 19 次，并把活网关的事件循环饿死过一次）。判活靠 `hermes gateway status` 巡检。
+- **`leveldb` / `.curator_backups` / `cron/output` 保留在备份范围**：合计约 4MB/轮，属噪音级；
+  为省这点字节牺牲"删掉的还能找回来"的完整性不划算（判据是内容有没有用，不是体积）。
 
 ## Pitfalls
 

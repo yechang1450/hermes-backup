@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.30
+version: 0.4.31
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -71,6 +71,8 @@ metadata:
 - `scripts/churn-report.py` — **单轮重写量**量测器（按目录汇总新增 blob 字节、列 >5MB 改动）：判断「体积增长有没有真被压住」只认它，不看 `--stat` 的文件数/行数；`git --raw` 解析用 `-z`，带空格路径不会错位
 - `scripts/session_layout.py` — 会话 JSON 的尾部稳定化（零解析扫描；**只留身份字段＋`messages` 在前，其余成员全部移到对象末尾**）
 - `scripts/test-reap-exporters.py` — 孤儿导出回收回归（3 场景：孤儿被杀 / 父进程健在者不动 / 命令行只提到文件名者不杀）
+- `scripts/test-kanban-snapshot.py` — SQLite 在线快照回归（3 项：WAL 下快照可正常打开 / 表结构与行数一致 / 普通拷贝的反例）
+- `scripts/test-kanban-scope.py` — kanban 采集范围回归（5 项：只备 boards 板库 / 不备工作区 db / 顶层 kanban.db / 走快照 API / **prune 之后板库仍在**）
 - `scripts/audit-coverage.py` — 覆盖率审计：①会话层（镜像会话文件 vs 活库 state.db 逐会话条数）②文件层（`--with-files`：HERMES_HOME 顶层条目 vs 采集白名单，列出未分类/漏备项）；判据＝硬伤退出码 1
 - `scripts/rotate-generation.sh` — 数据仓换代（孤儿快照单提交种子 → 新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑）
 - `references/generations.md` — 数据仓「换代」归档预案（体积到阈值时换新代仓、旧仓冻结为只读档案；不重写历史）
@@ -118,6 +120,7 @@ metadata:
 - **成功轮要清 `last_error`**（0.4.17）：健康文件是连续性记账的单一来源，失败时写 `last_error`、成功时必须置 `None`——否则「上一轮 timeout 3300s」会一直挂着，被后读的人（包括我）误判成当前仍在失败。`repaired_note` 属历史注记，保留不动。
 - **自定义拷贝路径必须登记 `_COPIED`，否则会被 prune 当残留删掉**（0.4.30，2026-10-25 实案）：`copy_kanban_dbs` 直接调 `snapshot_sqlite()`（绕过了 `copy_file` 的登记），结果 `prune_unvisited` 把 11 个板库当"本轮未访问"全删了——镜像是空的、且没有任何报错。凡是不走 `copy_file()` 的写镜像路径，都必须 `_COPIED.add(str(目标路径))`。回归＝`test-kanban-scope.py` 的 S5（copy 后跑 prune，断言文件仍在）。
 - **kanban 备份必须严守白名单**（0.4.29）：只备 `boards/<board>/kanban.db`（含 `boards/_archived/<board>/kanban.db`）与顶层 `kanban.db`。旧实现用 `rglob("*.db")`，把任务工作区/证据里的 73 个 `school80.db` 之类也备上了（镜像 84 个 db / 36MB），违背「工作区属过程记录」的政策、每轮还多快照 70+ 个无关库。回归＝`test-kanban-scope.py`（4 项）。**改动后下一轮会自动 prune 掉多备的工作区库。**
+- **末片必须压到 3MB（`TAIL_MAX`）**（0.4.31）：会话是「一行=一个整会话」，活跃会话每轮只在尾部追加，所以每轮重写量≈活跃会话数×末片大小。实测把末片从 12MB 压到 3MB 后，8 个活跃巨会话的尾部重写从 90MB 降到约 1/4。切片规则＝历史部分 12MB 一片，最后一刀正好落在 3MB（`part_slices()`，保证首尾相接无空隙）。回归＝`test-split.py` 的 [5] 末片 ≤ 3MB + [2] 拼接后逐字节等价。
 - **SQLite 必须用在线备份 API 快照，不能直接拷**（0.4.28）：看板库是 `journal_mode=wal`，而 `-wal`/`-shm` 被排除在备份外 ⇒ 只拷 `.db` 会丢掉尚未 checkpoint 的已提交事务；实测极端情况下**连建表语句都可能不在 `.db` 里**（普通拷贝打开即 `no such table`）。现在 `copy_file()` 对所有 `.db` 走 `snapshot_sqlite()`（`sqlite3.Connection.backup()`）：读穿 WAL、产出自包含紧凑快照，失败自动回退普通拷贝。覆盖 `kanban/*.db`、`shared-state.db`、`projects.db` 以及各档 `projects.db`。回归＝`test-kanban-snapshot.py`（3 项）。
 - **哨兵有超期兜底**（0.4.27）：周期 cron 的 `next_run_at` 会被网关重启重排（实测把 05:57 挪到 06:29，空窗 2.5h）；哨兵现在除「网关重启 / 静默 5 分钟 / 长静默恢复」外，还有 **⑤ overdue**——镜像 `finished_at` 超过 2.5 小时、没在同步、也不满足 20 分钟新鲜闸，就补一轮。回归＝`test-hb-sentinel.py` S8/S9。
 - **导出超时只杀直接子进程 → 孤儿导出会撞死下一轮**（0.4.15，2026-10-24 实案）：连续两轮 3300s 超时，原因是 `subprocess` 超时只杀直接子进程（`run_in_runtime` 启动器），真正的导出进程活下来占住 `profiles/<档>/state.db` 与镜像；下一轮再起一个，两个导出同时写同一批文件 → 双双卡死、RSS 涨到 1.6GB。现在三处收口：①导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()` 杀整树；②每轮启动后 `_reap_orphan_exporters()` 只回收「父进程已消失」的导出（识别条件：python 解释器 ＋ **真实参数**里以 `export_all_profiles.py` 结尾 ＋ 带 `--home`/`--out`；只看 argv 不看整条命令行文本，否则自己的 `-c` 探针只要代码里提到这些字眼就会自匹配）；③包装器 `hb-autosync` 超时也杀整树。回归＝`scripts/test-reap-exporters.py`（3 场景）。**判据：** 超时后先看 `ps` 里有没有 `export_all_profiles` 进程，再看下一轮是否同时存在两个导出。
@@ -142,7 +145,7 @@ metadata:
 - **半壳档**（如 `profiles/.deleted`、只余 `state.db` 的已退役档）：导出会失败/跳过，属预期；采集时已排除 `.deleted`。
 - **重启网关会连坐当前对话**：`hermes gateway restart` 由收尾器在桌面端关闭后执行，不要在对话中途手动跑。
 - **后台轮的完成通知会滞后且成批到达**：通知里的命令输出可能对应**已被后续轮取代**的旧轮（失败也可能早被补推/修复）。处理前先对时——读 `state/hb-sync-runs.jsonl` 最后一行的轮次时间与 `state/hb-sync-health.json` 的 `updated_at`；旧通知若已被后继轮补齐，只记一笔、不重跑、不回滚已改配置。
-- **改在跑 cron 的包装脚本＝先实跑一次再放手**：实案 10-23 00:55 `hb-autosync.py` 因缺 `import time` 一秒即失败（`NameError: name 'time' is not defined`，且 except 分支传了未绑定的 `started` 又抛 `UnboundLocalError` 把真因盖住）——此前改脚本**没实跑**（现成回归 `scripts/test-hb-health.py` 也没跑），错误一直留到下一个 2 小时触发点才暴露。规矩：改 `hb-sentinel.py` / `hb-autosync.py` 后，先在终端 `python <HERMES_HOME>/scripts/<脚本>.py` 实跑一次（或跑 `test-hb-health.py`）看 rc，再用 `hermes cron run` 核；`bump_unfinished` 一类兜底分支里的变量必须在 `try` 之前绑定。**另一面：双脚本互备确实救场**——本轮 00:55 周期件秒失败，哨兵（2 分钟）在 44 秒后自动补跑并成功（runs.jsonl 00:56:33 一轮 committed+pushed），所以周期件坏掉不必然造成备份缺口，判「有没有丢」看 runs.jsonl 而非 cron 状态；两枚脚本别合并成一只。
+- **改在跑 cron 的包装脚本＝先实跑一次再放手**：实案 10-23 00:55 `hb-autosync.py` 因缺 `import time` 一秒即失败（`NameError: name 'time' is not defined`，且 except 分支传了未绑定的 `started` 又抛 `UnboundLocalError` 把真因盖住）——此前改脚本**没实跑**（现成回归 `scripts/test-hb-health.py` 也没跑），错误一直留到下一个 2 小时触发点才暴露。规矩：改 `hb-sentinel.py` / `hb-autosync.py` 后，先在终端 `python <HERMES_HOME>/scripts/<脚本>.py` 实跑一次（或跑 `test-hb-health.py`）看 rc，再用 `hermes cron run` 核；`bump_unfinished` 一类兜底分支里的变量必须在 `try` 之前绑定。**另一面：双脚本互备确实救场**——本轮 00:55 周期件秒失败，哨兵（2 分钟）在 44 秒后自动补跑并成功（runs.jsonl 00:56:33 一轮 committed+pushed），所以周期件坏掉不必然造成备份缺口，判「有没有丢」看 runs.jsonl 而非 cron 状态；两枚脚本别合并成一只。**同一个道理适用于改 `sync.py` 本身：八套单元测试全绿也不等于端到端安全**——它们各自造假目录，走不到「真实采集 → 真实 prune」的交互（实案：`_COPIED` 漏登记让 11 个板库被静默删光，而 8 套测试全过）。改过采集 / 写入 / prune 任一路径后：跑一次真入口（`sync.py --collect-only` 或一轮短同步）＋ 当场数产物（镜像板库应为 11 个、工作区 db 应为 0），少数一次就少一个生产事故。
 - **`runs.jsonl` 只记「进程内走到的出口」，被外部硬杀的那一轮没有行**（2026-10-24 实测）：`hb-autosync.py` 在 01:45:28 起跑、01:48:27 被网关 shutdown drain（`cron_drain_timeout=30s`）掐掉，`runs.jsonl` **没有这一行**（末行仍是 21:44 成功轮），`hb-sync-child.log` 的 mtime 停在 01:45:39。⇒ 「有没有丢」不能单看 runs.jsonl 的行数，必须三件交叉：`executions.db`（该轮 `unknown`）+ `hb-sync-child.log` mtime + 远端 HEAD 比对。上一轮遗留的未推提交照旧由下一轮补推，零丢失。
 - **网关因「检出被换版本」自停也会连坐在跑轮次**：`gateway.log` 出现 `ERROR gateway.runtime_downgrade_exit: This gateway loaded …, but its checkout is now at …, a release that predates the gateway runtime` ⇒ 有人（update/回滚）把 checkout 切到更老的版本，网关按设计自杀，在跑的 cron 被 drain 掐掉。此时排查顺序是**先让检出稳定**（`git -C hermes-agent reflog` 看切版本的时刻与来源），不要去动备份脚本。
 - **多机/线上领先**：push 被拒会自动 `pull --no-rebase` 重试一次；出现合并冲突则中止待人工（口径：线上优先、本地另存，勿 force）。
@@ -162,6 +165,10 @@ metadata:
 
 ## Verification
 
+- **回归总闸：改过存储格式 / 采集白名单 / 审计器 / kanban 任一处，就把这 8 套全跑一遍再收工**（都在 `scripts/`，纯标准库、各自不碰真库）：
+  `test-layout.py`(6) · `test-split.py`(ALL-PASS，阈值直读 `sync.PART_MAX`) · `test-audit-coverage.py`(8) · `test-hb-sentinel.py`(9) · `test-hb-health.py` · `test-kanban-snapshot.py`(3) · `test-kanban-scope.py`(5) · `test-reap-exporters.py`(3)。
+  校验判据是**每套自己打印的「N 项，失败 0」**，不是 rc=0（脚本可能在断言前就因语法/路径错退出）。改阈值类常量时，测试要读运行时值（`sync.PART_MAX`）而不是抄一个字面量——两处各写一个数就会「测试绿、生产红」的反向事故。
+- **`--collect-only` 不是快速探针**：它只跳过 git 段，**导出照跑**（本机实测约 10 分钟）——想验证采集正确性（白名单、快照、prune）值得跑，想「看一眼状态」就别用它。跑完镜像里是未提交改动，别当成异常；下一轮会连带提交。
 - 同步后：`meta/sync-state.json` 的 `pushed` 为 true；`git ls-remote origin` 与本地提交一致。
 - **每轮结构化记录**：`$HERMES_HOME/state/hb-sync-runs.jsonl` 一行一轮（时长／分段耗时 collect·export·git／退出码／committed·pushed／字节数）——追轮次历史、算成功率与分段成本先读它；连续失败计数在 `state/hb-sync-health.json`，≥3 轮失败写 `state/hb-sync-needs-attention` 标记（不推送、不打扰，成功一轮自动清）。
 - 恢复后：置顶对话在；微信/QQ 发消息能续接旧线程；群聊记录在；各档 `hermes -p <档> sessions stats` 数量与备份一致；主档出词正常（provider 可用）。

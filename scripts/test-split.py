@@ -70,13 +70,21 @@ def main() -> int:
               % (sid, mode, "PASS" if same else "FAIL", len(original), len(blob), len(parts) or 1))
         ok &= same
 
-    # 3) 片数预期：按阈值动态推导（>阈值 才切片，片数 = ceil(字节数/阈值)）
-    import math
+    # 3) 片数预期：按切片函数动态推导（末片压到 TAIL_MAX，比 ceil 多一片是正常的）
     for sid, original in (("small0001", lines[0]), ("giant0002", lines[1]), ("edge0003", lines[2])):
-        want = 0 if len(original) <= PART else math.ceil(len(original) / PART)
+        want = 0 if len(original) <= PART else len(sync.part_slices(len(original), PART, sync.TAIL_MAX))
         got = len(list(outdir.glob(f"{sid}.part-*.jsonl")))
         print("[3] %s 片数 %d（期望 %d）: %s" % (sid, got, want, "PASS" if got == want else "FAIL"))
         ok &= got == want
+
+    # 5) 末片必须 ≤ TAIL_MAX（活跃会话每轮只重写末片，这条直接决定 churn）
+    for sid in ("giant0002", "edge0003"):
+        tail = sorted(outdir.glob(f"{sid}.part-*.jsonl"))[-1]
+        sz = tail.stat().st_size
+        ok_tail = sz <= sync.TAIL_MAX
+        print("[5] %s 末片 %s %.2f MB ≤ %.0f MB: %s"
+              % (sid, tail.name, sz / MB, sync.TAIL_MAX / MB, "PASS" if ok_tail else "FAIL"))
+        ok &= ok_tail
 
     # 4) 每片都能被"按序号拼接"的顺序识别（编号不重复且连续）
     for sid in ("giant0002", "edge0003"):

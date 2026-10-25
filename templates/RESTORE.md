@@ -44,9 +44,14 @@ git checkout
 ## 2. 恢复文件层（配置/凭据/记忆/技能/cron/看板 + 各 bot 档）
 
 ```
+# 先看计划（只读，不建目录、不写文件、不做备份）：
+python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup --dry-run
+# 确认无误再真覆盖（去掉 --dry-run）：
 python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup
 ```
 - 默认覆盖 `home-overlay/` → `%LOCALAPPDATA%\hermes\`，`profiles-overlay/<档>/` → `profiles\<档>\`。
+- `--dry-run` 只列「将覆盖多少文件 + 前 10 个路径」，**不建目录、不写文件、不做备份**。
+- 目标 `HERMES_HOME` 不存在时会**拒绝**（新机请先启动一次 Hermes 生成骨架）；确需新建加 `--create`。
 - 被覆盖的旧文件自动备份到 `restore-out\pre-restore-backup\`（要回滚就从这里拿）。
 - 完成标准：输出「覆盖 N 文件」且无报错；`HERMES_HOME\memories\MEMORY.md`、`config.yaml`、`.env` 已就位（重启后生效）。
 

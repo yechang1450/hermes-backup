@@ -13,7 +13,7 @@
 - **实测增长速率 ≈ 9.2MB/小时（≈220MB/天）**：用 9 个提交的**树体积**做曲线（10-24 21:01 3,201MB → 10-25 10:05 3,321MB，13.1 小时 +120MB）。
   不要用 `gh api .size` 估速率——它有滞后，会把 9.2 读成 14MB/h。
 - 按 4.5GB 算只够 **约 5.5 天** ⇒ 每 5 天换一代，等于每 5 天往 GitHub 多压一个 3–4GB 归档仓，比"一个稍大的活仓"更糟。
-- 12GB ⇒ 余量 ~8.7GB ⇒ 约 **25 天/代**；GitHub 的 5GB 是"性能建议"而非硬限，真正的硬限是单文件 100MB、单次 push 2GB（换代用孤儿快照正是为绕开 2GB）。
+- 12GB ⇒ 余量 ~8.7GB ⇒ 约 **40 天/代**（按 9.2MB/小时）；GitHub 的 5GB 是"性能建议"而非硬限，真正的硬限是单文件 100MB、单次 push 2GB（换代用孤儿快照正是为绕开 2GB）。
 - **代价只在克隆**：恢复不需要整仓历史，用部分克隆 + 稀疏检出即可（见 `templates/RESTORE.md` 第 0 节），实测只取 `sessions/main` 时体积与耗时都远小于全量。
 - **同时澄清一个度量陷阱**：`churn-report.py` 统计的是「新增 blob 的字节数」，**不等于仓体积增长**——同一文件被整份重写时，git 仍会对它做 delta 压缩，
   实际入库可能只有其几十分之一。判"涨得快不快"一律以 `gh api … --jq .size` 为准，churn 只用于判断"改动形状是否合理"。
@@ -39,7 +39,7 @@ git -C D:/hermes-backup push -u gen2 main
 git -C D:/hermes-backup ls-remote gen2 HEAD
 # 5) 切默认：把 mirror 的 origin 指向新仓 + 同步脚本默认 repo-name 改为新名
 git -C D:/hermes-backup remote set-url origin git@github.com:<owner>/hermes-backup-2026q4.git
-#    编辑 scripts/sync.py 的 --repo-name 默认值 → 新代名；发新版本（升 version）
+#    改技能目录 local.json 的 `repo` 字段（或镜像 origin）→ 新代名；发新版本（升 version）
 # 6) 跑一轮真实同步，确认提交落到新仓（git ls-remote origin HEAD == 本地 HEAD）
 # 7) 归档旧仓（只读，但仍可克隆）
 gh api -X PATCH repos/<owner>/hermes-backup -f archived=true

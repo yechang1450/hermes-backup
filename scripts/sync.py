@@ -16,7 +16,7 @@
 仓库解析顺序：镜像的 git remote > --remote > gh 登录账号（默认仓名 hermes-backup）。
 
 存储格式（v3，2026-10-17）：
-  · 会话原样存文本：<会话id>.jsonl（>90MB 时切 <会话id>.part-0001.jsonl … 分片）；
+  · 会话原样存文本：<会话id>.jsonl（>12MB 时切 <会话id>.part-0001.jsonl … 分片）；
     不压缩——预压缩（整包 gzip）会让头部元数据的任何变动把整份文件压缩后的字节
     全部改写，git 的增量(delta)机制失效、每轮把整包当新文件重存（实测 79MB/文件/轮）。
     原样文本让 git delta 直接命中未变区段（实测降到 ~0.01–2MB/文件/轮）。
@@ -1437,14 +1437,22 @@ def append_run(report: dict, t0: float, exit_code: int) -> None:
         log(f"!! 写 runs.jsonl 失败：{e!r}")
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """先写 .tmp 再 os.replace：被掐断时不会留下半截 JSON（哨兵要读这两个文件判状态）。"""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def write_meta(report: dict, t0: float) -> None:
     report.setdefault("finished_at", datetime.now().astimezone().isoformat())
     report.setdefault("duration_seconds", round(time.time() - t0, 1))
     meta = MIRROR / "meta" / "sync-state.json"
     meta.parent.mkdir(parents=True, exist_ok=True)
-    meta.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    _atomic_write(meta, json.dumps(report, ensure_ascii=False, indent=2))
     logfile = MIRROR / "logs" / "last-run.log"
-    logfile.write_text("\n".join(LOG) + "\n", encoding="utf-8")
+    logfile.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(logfile, "\n".join(LOG) + "\n")
 
 
 if __name__ == "__main__":

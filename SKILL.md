@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.64
+version: 0.4.65
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -101,7 +101,7 @@ metadata:
 把同步挂成 Hermes 官方 cron 的 watchdog 型任务（`--no-agent`：不过模型、不花 token，只投递脚本输出）：
 
 1. 启动器：本技能随附 `scripts/hb-sentinel.py`（哨兵）与 `scripts/hb-autosync.py`（周期）两枚参考实现——复制到 `HERMES_HOME\scripts\`（cron 脚本**只允许**放在该目录内；`.py` 由官方托管 Python 执行）。脚本自带 git PATH 摆正、防撞锁与 20 分钟新鲜度闸；**成功＝空输出（静默）**，失败输出错误摘要（被自动投递）。
-2. 建两个任务（哨兵 2 分钟＋周期 2 小时；完整命令见 `references/auto-sync.md`「安装」节）：`hermes cron create "2m" --name "hermes-backup 哨兵" --script hb-sentinel.py --no-agent --deliver local` 与 `hermes cron create "every 2h" --name "hermes-backup 周期同步" --script hb-autosync.py --no-agent --deliver local`。建好后用 `hermes cron run <任务id>` 当场触发核对——注意 **`cron run` 会跟随脚本跑完（同步一轮约 4–6 分钟）**：请放宽超时或用 background，勿中途掐掉（掐掉会留孤儿锁＋未推提交；v3.2 起由下一轮自动接管并补推，零丢失）。
+2. 建两个任务（哨兵 2 分钟＋周期 2 小时；完整命令见 `references/auto-sync.md`「安装」节）：`hermes cron create "2m" --name "hermes-backup 哨兵" --script hb-sentinel.py --no-agent --deliver local` 与 `hermes cron create "every 2h" --name "hermes-backup 周期同步" --script hb-autosync.py --no-agent --deliver local`。建好后用 `hermes cron run <任务id>` 当场触发核对——注意 **`cron run` 会跟随脚本跑完（同步一轮通常 5–10 分钟（大重排轮可达 20 分钟））**：请放宽超时或用 background，勿中途掐掉（掐掉会留孤儿锁＋未推提交；v3.2 起由下一轮自动接管并补推，零丢失）。
 3. 官方语义：**错过自动补跑**（`cron.catch_up_missed` 默认开；多次错过合并补跑一次）⇒ 等效「每次开机/网关重启后补一轮 ＋ 运行中周期刷新」；调度器随网关运行（`hermes cron status` 看宿主与心跳）；脚本单轮超时可调（`HERMES_CRON_SCRIPT_TIMEOUT` 或 `cron.script_timeout_seconds`），按同步 4–6 分钟一轮留足余量。
 4. **并发前提**：多触发源（手动＋自动）并存前，先给 `sync.py` 补**单实例锁**——两轮同步相撞会互踩镜像仓。（**已落地**：v0.3 起 `sync.py` 自带防撞锁，后来者自动让路。）
 5. **目标形态（四机制）**：①网关/Hermes 启动后 ②全部静默 ≥N 分钟 ③每 2 小时 ④长静默（≥1h）结束即触发——①②④ 由一个哨兵轮询脚本统一实现（Hermes 无启动/会话原生钩子，条件触发只能轮询；静默判据＝`gateway_state.json`＋`processes.json`＋`session_turn_leases`＋`async_delegations`＋`messages.max(timestamp)` 复合）。
@@ -157,7 +157,7 @@ metadata:
 ## Verification
 
 - **回归总闸：改过存储格式 / 采集白名单 / 审计器 / kanban 任一处，就把这 8 套全跑一遍再收工**（都在 `scripts/`，纯标准库、各自不碰真库）：
-  `test-layout.py`(6) · `test-split.py`(ALL-PASS，阈值直读 `sync.PART_MAX`) · `test-audit-coverage.py`(8) · `test-hb-sentinel.py`(9) · `test-hb-health.py` · `test-kanban-snapshot.py`(3) · `test-kanban-scope.py`(5) · `test-reap-exporters.py`(3)。
+  `test-layout.py`(6) · `test-split.py`(ALL-PASS，阈值直读 `sync.PART_MAX`) · `test-audit-coverage.py`(8) · `test-hb-sentinel.py`(12) · `test-hb-health.py` · `test-kanban-snapshot.py`(3) · `test-kanban-scope.py`(5) · `test-reap-exporters.py`(3)。
   校验判据是**每套自己打印的「N 项，失败 0」**，不是 rc=0（脚本可能在断言前就因语法/路径错退出）。改阈值类常量时，测试要读运行时值（`sync.PART_MAX`）而不是抄一个字面量——两处各写一个数就会「测试绿、生产红」的反向事故。
 - **`--collect-only` 不是快速探针**：它只跳过 git 段，**导出照跑**（本机实测约 10 分钟）——想验证采集正确性（白名单、快照、prune）值得跑，想「看一眼状态」就别用它。跑完镜像里是未提交改动，别当成异常；下一轮会连带提交。
 - 同步后：`meta/sync-state.json` 的 `pushed` 为 true；`git ls-remote origin` 与本地提交一致。

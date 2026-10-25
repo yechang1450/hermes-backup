@@ -135,7 +135,7 @@ git -C "$MIRROR" update-ref refs/heads/main "$C"
 git -C "$MIRROR" remote set-url origin "$URL"
 echo "  origin -> $URL"
 git -C "$MIRROR" push -q -u origin main && echo "  ✓ 切换后推送正常"
-python - "$HERE/local.json" "$TO" <<'PY'
+python - "$HERE/../local.json" "$TO" <<'PY'
 import json, sys
 from pathlib import Path
 p = Path(sys.argv[1]); repo = sys.argv[2]

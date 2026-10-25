@@ -93,7 +93,9 @@ def load_state() -> dict:
 
 def save_state(st: dict) -> None:
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    STATE_FILE.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
+    tmp = STATE_FILE.with_name(STATE_FILE.name + ".tmp")
+    tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, STATE_FILE)          # 原子：半截 JSON 会让下次判定全部重来
 
 
 def git_env() -> dict:

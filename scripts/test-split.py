@@ -35,8 +35,8 @@ def main() -> int:
     raw.parent.mkdir(parents=True, exist_ok=True)
 
     lines = [make_line("small0001", 2.0),          # 2MB → 单文件
-             make_line("giant0002", 100.0),        # 100MB → 3 片（PART_MAX=45MB）
-             make_line("edge0003", 45.0)]          # 45MB 左右 → 1–2 片（边界）
+             make_line("giant0002", 100.0),        # 100MB → 多片（阈值直读 sync.PART_MAX=12MB）
+             make_line("edge0003", 45.0)]          # 45MB 左右 → 多片（边界）
     raw.write_bytes(b"".join(lines))
     print("阈值 PART_MAX = %.1f MB" % (PART / MB))
 

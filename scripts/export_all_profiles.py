@@ -27,6 +27,10 @@ def export_one(name: str, db_path: Path, out_dir: Path) -> tuple[int, int]:
     projection = export_projection(shown)
     sessions = db.export_all(source=None, **projection)
     p = out_dir / f"{name}.jsonl"
+    # 注意：**不要**改成「按 id 逐个 export_session() 再渲染」——export_all() 会对 tool_names
+    # 等字段做后处理（实测：整档里是哈希串，export_session() 里是原始 JSON），逐会话渲染与
+    # 整档渲染不是逐字节相同（2026-10-26 实测 sha256 不同）。分块必须切同一份 sessions 列表。
+    #
     # 分块渲染：整档一次 render 会先把 1.6GB 拼成一个 str（main 上实测 MemoryError，
     # 2026-10-26）。分块后峰值只剩「一个 chunk 的字符串」，输出逐字节不变
     # （用同一批 sessions 切片渲染，sha256 与整档渲染一致，已实测）。

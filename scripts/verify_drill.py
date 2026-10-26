@@ -32,7 +32,7 @@ def session_groups(d: Path) -> dict:
 
 USAGE = """用法: python verify_drill.py <演练基目录>
   基目录下需有 repo/（备份仓克隆）与 home/（恢复目标）。
-  只读：不写镜像、不改活库；输出每个档的「镜像条数 vs 库内条数」对账，末行 VERIFY-DRILL-OK / FAILED。"""
+  只读：不写镜像、不改活库；输出每个档的「镜像条数 vs 库内条数」对账，末行固定打印 VERIFY-DONE（差异明细在正文）。"""
 
 
 def main() -> int:

@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.69
+version: 0.4.70
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -42,7 +42,7 @@ metadata:
 | 首次初始化（建私有仓） | `python <SKILL>/scripts/sync.py --owner <gh-user> --create-remote` |
 | 日常同步 | `python <SKILL>/scripts/sync.py` |
 | 文件层恢复 | `python <REPO>/tools/restore_files.py --repo <REPO> --home <HERMES_HOME>` |
-| 会话层恢复 | `python <REPO>/tools/run_in_runtime.py <REPO>/tools/restore_sessions.py --all`（加 `--fast-import`，大型历史约 5 倍速，见 references/session-storage.md） |
+| 会话层恢复 | `python <REPO>/tools/run_in_runtime.py <REPO>/tools/restore_sessions.py --all`（加 `--fast-import`，大型历史实测 2–3 倍速，见 references/session-storage.md） |
 | 拼包（给桌面端导入用） | `python <REPO>/tools/concat_sessions.py main` |
 | 覆盖率审计（镜像 vs 活库） | `python <SKILL>/scripts/audit-coverage.py --repo <REPO> --home <HERMES_HOME>`（PASS 打印 `AUDIT-PASS`，硬伤退出码 1；加 `--with-files` 连文件层一起审） |
 | 数据仓换代（体积到阈值） | `bash <SKILL>/scripts/rotate-generation.sh --from <旧代> --to <新代> --dry-run` 先看计划，再去掉 `--dry-run` 真跑（见 references/generations.md） |
@@ -124,7 +124,7 @@ metadata:
   取回路径＝`references/../scripts/restore_sessions.py --source <文件>`（`RESTORE.md` 第 8 节），需要哪条取哪条。
 - **网关计划任务不加"进程死了自动拉"**：官方任务无重启策略是设计；实测加 `TimeTrigger` 每 10 分钟拉一次会空烧
   （冷启动 300–900s，10 小时 19 次，并把活网关的事件循环饿死过一次）。判活靠 `hermes gateway status` 巡检。
-- **`leveldb` / `.curator_backups` / `cron/output` 保留在备份范围**：合计约 4MB/轮，属噪音级；
+- **`leveldb` / `.curator_backups` / `cron/output` 保留在备份范围**：合计约 10–15MB/轮（leveldb 4–5、curator 4–8、cron 1–2），属噪音级；
   为省这点字节牺牲"删掉的还能找回来"的完整性不划算（判据是内容有没有用，不是体积）。
 
 ## Pitfalls
@@ -156,7 +156,7 @@ metadata:
 
 ## Verification
 
-- **回归总闸：改过存储格式 / 采集白名单 / 审计器 / kanban 任一处，就把这 8 套全跑一遍再收工**（都在 `scripts/`，纯标准库、各自不碰真库）：
+- **回归总闸：改过存储格式 / 采集白名单 / 审计器 / kanban 任一处，就把这 9 套全跑一遍再收工**（都在 `scripts/`，纯标准库、各自不碰真库）：
   `test-layout.py`(6) · `test-split.py`(ALL-PASS，阈值直读 `sync.PART_MAX`) · `test-audit-coverage.py`(8) · `test-hb-sentinel.py`(12) · `test-hb-health.py` · `test-kanban-snapshot.py`(3) · `test-kanban-scope.py`(5) · `test-reap-exporters.py`(3)。
   校验判据是**每套自己打印的「N 项，失败 0」**，不是 rc=0（脚本可能在断言前就因语法/路径错退出）。改阈值类常量时，测试要读运行时值（`sync.PART_MAX`）而不是抄一个字面量——两处各写一个数就会「测试绿、生产红」的反向事故。
 - **`--collect-only` 不是快速探针**：它只跳过 git 段，**导出照跑**（本机实测约 10 分钟）——想验证采集正确性（白名单、快照、prune）值得跑，想「看一眼状态」就别用它。跑完镜像里是未提交改动，别当成异常；下一轮会连带提交。
@@ -165,7 +165,7 @@ metadata:
 - 恢复后：置顶对话在；微信/QQ 发消息能续接旧线程；群聊记录在；各档 `hermes -p <档> sessions stats` 数量与备份一致；主档出词正常（provider 可用）。
 - 全量验收入口：`templates/RESTORE.md` 第 6 节清单。
 - **全量审计（大改后或定期）**：四路核对（维护笔记③）＋版本字符串全扫（如 `grep -rn '0\.3\.' <技能目录>`，捕捉状态行/示例漂移）＋点火一轮真同步核 `git ls-remote` 前进；线上设置与隐私面 → `github-security-audit` 技能。四路自查的完整清单（含每条的 grep 与判据）→ `references/audit-playbook.md`。
-- **完整性＝两条腿，缺一条都不算数**：①**演练**（镜像 → 沙箱，证明"能恢复"）②**覆盖率审计**（活库 → 镜像，证明"备的是全部"）。审计默认只审会话层；**要连文件层（`--with-files`）一起跑**才算覆盖配置/记忆/技能/平台数据那一半。判据一句话：缺会话／多会话／镜像条数超前／以解析失败＝**硬伤**（退出码 1），**落后＝正常增量**，孤立消息组＝活库自身残留不计。
+- **完整性＝两条腿，缺一条都不算数**：①**演练**（镜像 → 沙箱，证明"能恢复"）②**覆盖率审计**（活库 → 镜像，证明"备的是全部"）。审计默认只审会话层；**要连文件层（`--with-files`）一起跑**才算覆盖配置/记忆/技能/平台数据那一半。判据一句话：缺会话／镜像条数超前／会话文件解析失败＝**硬伤**（退出码 1）；**多会话＝警告**（0.4.48 起）、**落后＝正常增量**、孤立消息组＝活库自身残留，均不计硬伤。
 - **审计的两类"非硬伤"要会读，别急着当漏备**：①**文件层轮内新建豁免**（0.4.13）——白名单目录/文件在镜像缺失，但源内容 mtime 晚于本轮 `started_at` 时，判「轮内新建、下一轮会采」，输出在 `· 轮内新建…` 一行、不计硬伤（实案：`desktop/interrupted_turns.json` 由桌面端在轮后写入，被误判为漏备）；②**镜像独有会话**（审计报「多会话」）——通常是活库被外部事件换过（state.db 回滚/还原、手工清理），不是漏备也不是采集错：下一轮会从最新树 prune，**git 历史仍保留**；要留档先另存文件（含分片），要导回用 `git show <sha>:sessions/main/<sid>.jsonl` 取出后走 `--source` 导入。看到「多会话」先问「活库最近是否被回滚过」，别从活库删东西。
 - **「镜像多会话」只警告，不判硬伤**（0.4.48）：子代理临时会话（`Subagent: …`）、人工删除、库回滚都会让镜像比活库多；
   这类是「备份比活库全」，不是备份缺陷——原先判硬伤会导致每次跑都 AUDIT-FAIL，把真信号淹没（2026-10-26 实测 5 个 `Subagent:` 会话）。

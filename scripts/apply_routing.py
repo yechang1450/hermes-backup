@@ -55,7 +55,7 @@ def main() -> int:
         print(f"supplement/gateway_routing.json 结构不对：{exc}")
         return 1
 
-    home = Path(a.home)
+    home = Path(a.home).resolve()   # 必须绝对：相对路径会把 scope 写成 "home\\sessions"（2026-10-26 演练发现）
     scope = str(home / "sessions")  # 目标机的 scope 恒为本机 HERMES_HOME
     db = home / "state.db"
     if not db.is_file():

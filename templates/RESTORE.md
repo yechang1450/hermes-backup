@@ -46,8 +46,8 @@ git checkout
 ```
 # 先看计划（只读，不建目录、不写文件、不做备份）：
 python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup --dry-run
-# 确认无误再真覆盖（去掉 --dry-run）：
-python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup
+# 确认无误再真覆盖（去掉 --dry-run）。新机 HERMES_HOME 还不存在时要加 --create：
+python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup --create
 ```
 - 默认覆盖 `home-overlay/` → `%LOCALAPPDATA%\hermes\`，`profiles-overlay/<档>/` → `profiles\<档>\`。
 - `--dry-run` 只列「将覆盖多少文件 + 前 10 个路径」，**不建目录、不写文件、不做备份**。
@@ -118,8 +118,8 @@ pwsh -NoProfile -Command "(Invoke-CimMethod -ClassName Win32_Process -MethodName
 cd /d/hermes-backup                      # 或你的镜像路径
 SID=20261024_113906_c858a0               # 会话 id（备份文件名去掉 .jsonl / .part-NNNN）
 git log --oneline -3 -- sessions/main/$SID.jsonl        # 找一个仍有它的提交
-git show <sha>:sessions/main/$SID.jsonl > /tmp/$SID.jsonl   # 取回（分片则逐片取 part-0000…）
-python -c "import json;d=json.load(open('/tmp/$SID.jsonl'));print(len(d['messages']))"   # 自检条数
+git show <sha>:sessions/main/$SID.jsonl > "$LOCALAPPDATA/Temp/$SID.jsonl"   # 取回（分片则逐片取 part-0000…）
+python -c "import json,os;d=json.load(open(os.path.join(os.environ['LOCALAPPDATA'],'Temp','$SID.jsonl')));print(len(d['messages']))"   # 自检条数
 ```
 
 再把文件放进 `<src>/main/` 目录，用 `restore_sessions.py --source <src> --profile main --fast-import --verify` 导回活库

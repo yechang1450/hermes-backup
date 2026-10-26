@@ -13,6 +13,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -72,10 +73,13 @@ def _wait_find(pred, timeout: float = 6.0):
 
 def main() -> int:
     fails = 0
+    # 每次跑用唯一 token：否则本机/上一轮遗留的同类进程会被算进本轮的 find 里（实测会假红）
+    token = "hcb" + uuid.uuid4().hex[:10]
 
     # S1：孤儿
-    _spawn_orphan_maker([FAKE, "--home", "X", "--out", "Y"])
-    orphans = _wait_find(lambda p, cl: "hermes-cloud-backup" in cl and "--home" in cl and "--out" in cl
+    _spawn_orphan_maker([FAKE, "--home", token, "--out", token])
+    # 判据用「argv 带本 run 的 token」而不是目录名：克隆目录未必叫 hermes-cloud-backup
+    orphans = _wait_find(lambda p, cl: token in cl and "--home" in cl and "--out" in cl
                          and not psutil.pid_exists(p.info["ppid"]))
     killed = sync._reap_orphan_exporters()
     # 刚 kill 的进程可能还没落气：给最多 5 秒
@@ -87,7 +91,7 @@ def main() -> int:
     fails += 0 if ok1 else 1
 
     # S2：父进程健在
-    live = _spawn([FAKE, "--home", "X", "--out", "Y"])
+    live = _spawn([FAKE, "--home", token + "live", "--out", token + "live"])
     _wait_find(lambda p, cl: p.pid == live.pid)
     sync._reap_orphan_exporters()
     ok2 = _alive(live.pid)
@@ -99,8 +103,8 @@ def main() -> int:
         pass
 
     # S3：孤儿但命令行不含 --home/--out（只是提到文件名）
-    _spawn_orphan_maker([FAKE])
-    fake = _wait_find(lambda p, cl: "export_all_profiles.py" in cl and "--home" not in cl
+    _spawn_orphan_maker([FAKE, "--token", token + "na"])
+    fake = _wait_find(lambda p, cl: (token + "na") in cl and "--home" not in cl
                       and not psutil.pid_exists(p.info["ppid"]))
     sync._reap_orphan_exporters()
     ok3 = bool(fake) and all(_alive(pid) for pid in fake)

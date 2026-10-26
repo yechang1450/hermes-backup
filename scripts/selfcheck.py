@@ -49,6 +49,31 @@ def step(name: str, rc: int, detail: str, results: list) -> None:
     print(("  ✓ " if ok else "  ✗ ") + f"{name:<34} rc={rc:<3} {detail[:80]}", flush=True)
 
 
+
+def _warn_if_sync_running() -> None:
+    """有同步轮在跑时提醒：测试会写上百 MB、读全部会话库，可能把那一轮拖到超时。
+    （2026-10-26 实案：自检与批量导出并发，导出子进程卡在启动阶段 28 分钟。）"""
+    import os
+    lock = Path(os.environ.get("HERMES_HOME") or (Path(os.environ.get("LOCALAPPDATA", "")) / "hermes")) \
+        / "state" / "hermes-backup-sync.lock"
+    if not lock.is_file():
+        return
+    try:
+        import json as _json
+        pid = int(_json.loads(lock.read_text(encoding="utf-8")).get("pid") or 0)
+    except Exception:  # noqa: BLE001
+        return
+    live = False
+    try:
+        import psutil
+        live = pid > 0 and psutil.pid_exists(pid)
+    except Exception:  # noqa: BLE001
+        live = False
+    if live:
+        print(f"!! 有一轮同步正在进行（pid {pid}）：本自检会抢磁盘，可能把它拖到超时——建议等它跑完。",
+              flush=True)
+
+
 def compile_all(results: list) -> None:
     bad = []
     for f in sorted(HERE.glob("*.py")):
@@ -127,6 +152,7 @@ def main() -> int:
 
     t0 = time.time()
     print(f"== selfcheck（技能 {ROOT.name}）==", flush=True)
+    _warn_if_sync_running()
     results: list = []
     compile_all(results)
     run_tests(results)

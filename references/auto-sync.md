@@ -73,7 +73,7 @@ hermes cron run <任务id>      # 各触发一轮核验（同步单轮 4–6 分
 
 - **每轮一行结构化记录**：`$HERMES_HOME/state/hb-sync-runs.jsonl`（`start_ts/end_ts/duration_s/exit_code/timings{collect,export,git}/sessions/files/size_total_mb/committed/pushed/aborted/via`）——验收与排障只认这一行。
 - **子进程输出流式落盘**：`$HERMES_HOME/state/hb-sync-child.log`（哨兵与周期脚本都流式写盘；超时被掐也留有阶段证据，替代原先 `capture_output` 把输出吞掉的做法）。
-- **分阶段预算**（以代码为准：`sync.py` 的 `PUSH_TIMEOUT`、`hb-autosync.py` 的 `SYNC_TIMEOUT`）：导出 ≤2000s、push ≤1500s（0.4.23 由 900s 上调）、外层 **3900s** 兜底；逐档 CLI 回退每档 ≤900s。实测：正常轮 250–650s；一次 `git gc --auto` 全量 repack 曾把单轮拖到 **1,465s**（git 段 1,090s）⇒ 镜像已设 `gc.auto=0`（0.4.37）。
+- **分阶段预算**（以代码为准：`sync.py` 的 `PUSH_TIMEOUT`、`hb-autosync.py` 的 `SYNC_TIMEOUT`）：导出 ≤1200s、push ≤1500s（0.4.23 由 900s 上调）、外层 **3900s** 兜底；逐档 CLI 回退每档 ≤900s。实测：正常轮 250–650s；一次 `git gc --auto` 全量 repack 曾把单轮拖到 **1,465s**（git 段 1,090s）⇒ 镜像已设 `gc.auto=0`（0.4.37）。
 - **降优先级**：两个包装脚本以 `BELOW_NORMAL_PRIORITY_CLASS` 拉起 `sync.py`，不与前台抢 CPU/IO。
 - **连续失败记账（0.4.3 起单一来源）**：`state/hb-sync-health.json` 由 **sync.py 自己在每个出口写**——cron 包装、哨兵 ①②④、手工运行都走同一条链路，字段含 `consecutive_failures / last_exit_code / last_start_ts / last_end_ts / last_duration_s`；连续 ≥3 轮失败写 `state/hb-sync-needs-attention`（**不主动推送**），一旦出现成功轮即清零并**自动删标记**（标记描述的是"当前是否仍连续失败"，条件消失就该消失）。子进程**没跑完**（超时/被杀/起不来）时由包装补记一次，`last_exit_code="unfinished"`，并按"健康文件 `updated_at` 是否晚于子进程启动"判重，绝不重复计数。
 

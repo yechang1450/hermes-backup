@@ -806,7 +806,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
                                    "--home", str(HERMES_HOME), "--out", str(rawdir)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             try:
-                out, err = bp.communicate(timeout=2000)   # 导出阶段预算 33 分钟
+                out, err = bp.communicate(timeout=1200)   # 导出阶段预算 20 分钟（实测 210–600s，留 ~2x 余量）
             except subprocess.TimeoutExpired:
                 # subprocess.run 的超时只杀直接子进程（run_in_runtime 启动器），真正的导出进程
                 # 会活下来占住镜像与各档 state.db —— 下一轮再起一个，两个导出同时写同一批文件
@@ -816,12 +816,20 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
                     bp.communicate(timeout=15)
                 except Exception:
                     pass
-                raise RuntimeError(f"export_timeout（批量导出超过 2000s 预算；已杀进程树 {killed} 个）")
+                raise RuntimeError(f"export_timeout（批量导出超过 1200s 预算；已杀进程树 {killed} 个）")
             if bp.returncode != 0:
                 # 部分档失败不代表全批作废：下面按「缺哪些文件」决定是否回退，缺的档再走 CLI。
-                log(f"批量导出部分失败 rc={bp.returncode}：{(out or err or '').strip()[-300:]}")
+                # 但只有末尾 300 字根本看不出哪档、为什么（2026-10-26 实案：main 缺件、原因被截掉），
+                # 所以全量输出落一份盘。
+                try:
+                    dumptxt = (out or "") + ("\n[stderr]\n" + err if err else "")
+                    (HERMES_HOME / "state" / "hb-bulk-export.log").write_text(dumptxt, encoding="utf-8")
+                    log(f"批量导出部分失败 rc={bp.returncode}：全量输出见 {HERMES_HOME / 'state' / 'hb-bulk-export.log'}"
+                        f"；末尾：{(out or err or '').strip()[-300:]}")
+                except Exception:
+                    log(f"批量导出部分失败 rc={bp.returncode}：{(out or err or '').strip()[-300:]}")
         except subprocess.TimeoutExpired:
-            raise RuntimeError("export_timeout（批量导出超过 2000s 预算）")
+            raise RuntimeError("export_timeout（批量导出超过 1200s 预算）")
         except Exception as e:
             bulk_ok = False
             log(f"批量导出异常 {type(e).__name__}：回退逐档 CLI")

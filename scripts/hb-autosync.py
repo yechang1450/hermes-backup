@@ -119,6 +119,23 @@ def bump_unfinished(start_ts: float, reason: str) -> int:
                               % (n, reason[:120], CHILD_LOG), encoding="utf-8")
     except OSError:
         pass
+    # 契约是「每轮一行」：被 SIGKILL 的轮次 sync.py 没机会写，这里补一行（带 note 标明来源）。
+    try:
+        RUNS = HOME / "state" / "hb-sync-runs.jsonl"
+        RUNS.parent.mkdir(parents=True, exist_ok=True)
+        end = datetime.now().astimezone()
+        row = {
+            "start_ts": datetime.fromtimestamp(start_ts).astimezone().isoformat(timespec="seconds"),
+            "end_ts": end.isoformat(timespec="seconds"),
+            "duration_s": round(end.timestamp() - start_ts, 1),
+            "exit_code": "unfinished",
+            "note": reason[:200],
+            "via": "wrapper",
+        }
+        with open(RUNS, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
     return n
 
 
@@ -172,6 +189,8 @@ def main() -> int:
     tail = child_log_tail()
     if rc == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
         return 0
+    # 子进程非零退出（被杀/崩）时 sync.py 可能没机会记账 ⇒ 补一次，避免"这轮没发生"
+    bump_unfinished(started, "child rc=%s" % rc)
     print("[hb-autosync] 同步失败 rc=%s\n%s" % (rc, tail[-800:]), flush=True)
     return 1
 

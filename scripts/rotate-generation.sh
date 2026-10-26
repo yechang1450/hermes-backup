@@ -53,13 +53,66 @@ echo "  新代(接手): $OWNER/$TO"
 echo "  归档旧仓  : $([ $SKIP_ARCHIVE = 1 ] && echo 否 || echo 是)"
 
 # ---------- [0] 前置检查 ----------
-DIRT=$(git -C "$MIRROR" status --porcelain | grep -vE '^( M|M |A |\?\?) (meta/|logs/)' || true)
-[ -z "$DIRT" ] || { echo "!! 工作树有意外改动："; echo "$DIRT" | head -8; exit 1; }
-[ ! -e "$LOCK" ] || { echo "!! 已有同步在跑（锁存在 $LOCK）"; exit 1; }
+# 未提交改动的两类来源：
+#   ① 桌面端/leveldb 这类**持续写入**（不可能等到"绝对干净"）
+#   ② 上一轮被中断留下的半成品
+# 换代种子取的是**工作树**，所以两者都会被带上。做法：真跑先提交收口（并尝试推一次），
+# dry-run 只报告不拦——否则在桌面端开着的机器上永远换不了代（2026-10-26 实测）。
+DIRT=$(git -C "$MIRROR" status --porcelain | grep -vE '^( M|M |A |\?\?) (meta/|logs/|desktop-overlay/)' || true)
+# 锁存在 ≠ 同步在跑：被杀的进程会留下死锁，只看存在会让换代永远做不了（同 hb-sentinel 的教训）
+if [ -e "$LOCK" ]; then
+  # 锁是 JSON（{"pid":N,...}）：直接抽数字会把时间戳也拼进来，必须按字段解析
+  LP=$(python - "$LOCK" <<'PYLOCK' 2>/dev/null || echo 0
+import json, re, sys
+try:
+    print(int(json.load(open(sys.argv[1], encoding="utf-8")).get("pid") or 0))
+except Exception:
+    try:
+        print(int(re.sub(r"\D", "", open(sys.argv[1], encoding="utf-8").readline()) or 0))
+    except Exception:
+        print(0)
+PYLOCK
+)
+  # 注意：MSYS 的 kill -0 看不到原生 Windows 进程，必须用 psutil 判活
+  LIVE=$(python - "$LP" <<'PYLIVE' 2>/dev/null || echo no
+import sys
+try:
+    import psutil
+    print("yes" if int(sys.argv[1]) > 0 and psutil.pid_exists(int(sys.argv[1])) else "no")
+except Exception:
+    print("no")
+PYLIVE
+)
+  if [ "$LIVE" = "yes" ]; then
+    echo "!! 已有同步在跑（pid $LP 存活，锁 $LOCK）"; exit 1
+  fi
+  echo ".. 发现死锁（pid ${LP:-未知} 已不在），按无锁继续"
+fi
+if [ -n "$DIRT" ]; then
+  echo "!! 有未提交改动（真跑会先提交收口再换代）："
+  echo "$DIRT" | head -8
+  if [ "$DRY" = "1" ]; then
+    echo "   （dry-run 不写任何东西）"
+  else
+    git -C "$MIRROR" add -A
+    if git -C "$MIRROR" commit -q -m "pre-rotate: 收口工作树 $(date '+%F %T')"; then
+      echo "   已提交收口：$(git -C "$MIRROR" log -1 --format=%h)"
+    else
+      echo "!! 收口提交失败（可能无改动），继续"
+    fi
+    for i in 1 2 3; do
+      git -C "$MIRROR" push -q origin main && { echo "   已推送收口提交"; break; }
+      echo "   推送失败（第 $i 次），5s 后重试"; sleep 5
+    done
+  fi
+fi
 L=$(git -C "$MIRROR" rev-parse HEAD)
 # 用 refs/heads/main（HEAD 在部分传输/本地路径下可能不被广播，会误判"本地 != 远端"）
 R=$(git -C "$MIRROR" ls-remote origin refs/heads/main 2>/dev/null | cut -c1-40)
-[ "$L" = "$R" ] || { echo "!! 本地($L) != 远端($R)，先让下一轮同步收口"; exit 1; }
+if [ "$L" != "$R" ]; then
+  echo "!! 本地($L) != 远端($R)：收口提交没推上去。"
+  echo "   旧代远端会少这一个提交，但新代种子取的是工作树、内容不缺；继续。"
+fi
 FILES=$(git -C "$MIRROR" ls-files | wc -l)
 SESS=$(git -C "$MIRROR" ls-files 'sessions/*' | wc -l)
 TREE_MB=$(git -C "$MIRROR" ls-files -z | python -c "

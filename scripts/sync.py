@@ -724,6 +724,25 @@ def split_to_session_parts(raw: Path, outdir: Path) -> dict:
     return stats
 
 
+def guard_zero_sessions(name: str, entry: dict, keep: dict, sessions_root: Path) -> bool:
+    """零产出保护：导出"成功"却 0 个会话，而该档历史上明明有文件 ⇒ 判失败并保留旧文件。
+
+    2026-10-26 实案：`export main: sessions=0 files=0`（内存不足时 CLI 也这样）⇒ keep 为空
+    ⇒ prune_stale 把 sessions/main 整个目录删掉（1,470 个文件），整轮还报 exit 0 并推送。
+    返回值：是否触发了保护。
+    """
+    d = sessions_root / name
+    old_files = {f.name for f in d.iterdir() if f.is_file()} if d.is_dir() else set()
+    if entry.get("sessions", 0) == 0 and old_files:
+        entry["ok"] = False
+        entry["error"] = "zero_sessions"
+        keep[name] = old_files
+        log(f"!! export {name}: 返回 0 个会话但该档已有 {len(old_files)} 个文件"
+            f"——判为失败，本轮不 prune")
+        return True
+    return False
+
+
 def prune_stale(sessions_root: Path, keep: dict[str, set[str]],
                 allow_delete: frozenset[str] | set[str] = frozenset()) -> None:
     """删掉本轮导出集合之外的旧文件（会话已删除 / 档已不存在），其余原样保留、mtime 不动。
@@ -774,6 +793,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             raw.unlink()
             entry.update(stats)
             keep[name] = set(entry.pop("_files", []))
+            guard_zero_sessions(name, entry, keep, sessions_root)
         else:
             entry["ok"] = False
             entry["error"] = "no_raw"
@@ -899,6 +919,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             raw.unlink()
             entry.update(stats)
             keep[name] = set(entry.pop("_files", []))
+            guard_zero_sessions(name, entry, keep, sessions_root)
         else:
             # 导出失败或零产出：**绝不能**把该档已有历史当成"活库已删"清掉。
             # 原实现这里不登记 keep ⇒ prune_stale 把 sessions/<档> 整目录 rmtree，然后照常 commit+push
@@ -926,6 +947,11 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         do_one(d.name, d.name)
     existing = {x.name for x in sessions_root.iterdir() if x.is_dir()}
     prune_stale(sessions_root, keep, allow_delete=existing - set(wanted))
+    bad = sorted(nm for nm, e in report["exports"].items() if not e.get("ok"))
+    if bad:
+        report["failed_profiles"] = bad
+        log(f"!! {len(bad)} 个档导出失败（{bad}）：它们的旧文件已原样保留；"
+            f"本轮仍提交其它档的更新，但按失败记（exit 5）")
 
 
 def dump_routing(report: dict) -> None:
@@ -1395,8 +1421,12 @@ def main() -> int:
     write_meta(report, t0)
     log(f"sync 完成：{report['duration_seconds']}s 总量 {total/1048576:.1f}MB "
         f"committed={report.get('committed')} pushed={report.get('pushed')}")
-    append_run(report, t0, 0)
-    return 0
+    code = 5 if report.get("failed_profiles") else 0
+    if code:
+        report["aborted"] = "profile_export_failed: " + ",".join(report["failed_profiles"])
+        log("!! 本轮有档导出失败：按 exit 5 记账（其它档已正常提交/推送）")
+    append_run(report, t0, code)
+    return code
 
 
 RUNS_LOG = HERMES_HOME / "state" / "hb-sync-runs.jsonl"

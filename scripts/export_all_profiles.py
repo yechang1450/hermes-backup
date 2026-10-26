@@ -26,11 +26,18 @@ def export_one(name: str, db_path: Path, out_dir: Path) -> tuple[int, int]:
     shown = "jsonl" in SAVE_TRANSCRIPT_FORMATS          # 与 CLI _cmd_export 的投影选择完全一致
     projection = export_projection(shown)
     sessions = db.export_all(source=None, **projection)
-    content = render_sessions_export(sessions, fmt="jsonl")
     p = out_dir / f"{name}.jsonl"
+    # 分块渲染：整档一次 render 会先把 1.6GB 拼成一个 str（main 上实测 MemoryError，
+    # 2026-10-26）。分块后峰值只剩「一个 chunk 的字符串」，输出逐字节不变
+    # （用同一批 sessions 切片渲染，sha256 与整档渲染一致，已实测）。
+    CHUNK = 4
+    total = 0
     with open(p, "w", encoding="utf-8") as fh:          # 与 CLI 相同的换行（Windows=CRLF），保证逐字节一致
-        fh.write(content)
-    return len(sessions), len(content.encode("utf-8"))
+        for i in range(0, len(sessions), CHUNK):
+            chunk = render_sessions_export(sessions[i:i + CHUNK], fmt="jsonl")
+            fh.write(chunk)
+            total += len(chunk.encode("utf-8"))
+    return len(sessions), total
 
 
 def main() -> int:

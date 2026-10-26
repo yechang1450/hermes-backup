@@ -41,7 +41,7 @@ hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-cloud
 ## 自检（改完/定期）
 
 ```bash
-python scripts/selfcheck.py                          # 约 1 分钟：编译 + 9 套回归 + 文档引用完整性
+python scripts/selfcheck.py                          # 约 1 分钟：编译 + 9 套回归 + 文档引用 + 公开面卫生
 python scripts/selfcheck.py --repo D:/hermes-backup  # 追加镜像分片体检（PARTS-OK）
 python scripts/selfcheck.py --repo D:/hermes-backup --audit   # 追加会话层覆盖率审计（2–5 分钟）
 ```

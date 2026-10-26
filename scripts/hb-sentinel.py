@@ -39,7 +39,7 @@ QUIET_SECONDS = 300          # ② 静默阈值：5 分钟（按全库最后一�
 LONG_QUIET_SECONDS = 3600    # ④ 长静默阈值：1 小时
 OVERDUE_SECONDS = 150 * 60   # ⑤ 超期兜底：>2.5 小时没有成功轮 ⇒ 补一轮（周期 cron 漂移/漏跑时）
 MIN_SYNC_GAP = 20 * 60       # 距上次实际同步 ≥20 分钟才允许再触发
-SYNC_TIMEOUT = 3900    # 与 hb-autosync 一致（导出 2000s + 推送 1500s + 余量）
+SYNC_TIMEOUT = 3900    # 与 hb-autosync 一致；外层兜底（导出按进展判、硬上限 3600s + push 1500s 不能简单相加）
 
 NOTES: list[str] = []
 

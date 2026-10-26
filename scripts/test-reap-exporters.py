@@ -77,10 +77,17 @@ def main() -> int:
     token = "hcb" + uuid.uuid4().hex[:10]
 
     # S1：孤儿
-    _spawn_orphan_maker([FAKE, "--home", token, "--out", token])
-    # 判据用「argv 带本 run 的 token」而不是目录名：克隆目录未必叫 hermes-cloud-backup
-    orphans = _wait_find(lambda p, cl: token in cl and "--home" in cl and "--out" in cl
-                         and not psutil.pid_exists(p.info["ppid"]))
+    # 并发保护：常驻哨兵/其它测试也可能在跑 _reap_orphan_exporters()，可能抢在我们观察前
+    # 就把刚生成的孤儿收掉（实测同一台机上会偶发 find=[]）。重试三次，任一次观察到即算数。
+    orphans, killed = [], []
+    for attempt in range(3):
+        _spawn_orphan_maker([FAKE, "--home", token + str(attempt), "--out", token + str(attempt)])
+        # 判据用「argv 带本 run 的 token」而不是目录名：克隆目录未必叫 hermes-cloud-backup
+        orphans = _wait_find(lambda p, cl: token in cl and "--home" in cl and "--out" in cl
+                             and not psutil.pid_exists(p.info["ppid"]))
+        if orphans:
+            break
+        time.sleep(1.0)
     killed = sync._reap_orphan_exporters()
     # 刚 kill 的进程可能还没落气：给最多 5 秒
     deadline = time.time() + 5

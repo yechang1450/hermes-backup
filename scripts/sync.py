@@ -1009,8 +1009,10 @@ def _reap_orphan_exporters() -> list[int]:
     """回收**父进程已消失**的批量导出进程（超时只杀直接子进程留下的孙子）。
 
     识别条件（全部满足才算，避免误杀"命令行里只是提到文件名"的进程）：
-    ① python 解释器；② 命令行含 ``hermes-cloud-backup`` 与 ``export_all_profiles.py``；
+    ① python 解释器；② 真实参数里有一个以 ``export_all_profiles.py`` 结尾的脚本路径；
     ③ 带 ``--home`` 与 ``--out``（真实调用形态）；④ 父进程已不存在。
+    **不要**再要求命令行里出现 ``hermes-cloud-backup`` 这个目录名——克隆到别的目录名
+    （或换 profile 安装）时该条件恒不满足，孤儿永远回收不到（2026-10-26 干净克隆实测）。
     导出会写镜像与读各档 state.db，留着它＝下一轮两个导出进程同时写同一批文件
     （2026-10-24 实案：连续两轮 3300s 超时）。
     """
@@ -1032,7 +1034,7 @@ def _reap_orphan_exporters() -> list[int]:
             # 必须是**真实参数**里带脚本路径与 --home/--out，而不是某个 -c 代码串里提到这些字眼
             if not any(str(a).endswith("export_all_profiles.py") for a in argv[1:]):
                 continue
-            if not ("--home" in argv and "--out" in argv and "hermes-cloud-backup" in " ".join(argv)):
+            if not ("--home" in argv and "--out" in argv):
                 continue
             if p.info["pid"] == me:
                 continue

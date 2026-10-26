@@ -46,13 +46,21 @@ def main() -> int:
     # 可用 HB_TEST_MIRROR 指向别处；拿不到真实样本就退回合成样本（保持自足）
     src = Path(os.environ.get("HB_TEST_MIRROR") or r"D:/hermes-backup/sessions/main")
     cand = None
+    raw = ""
     if src.is_dir():
-        pool = sorted((p for p in src.glob("*.jsonl") if p.stat().st_size < 2 * 1024 * 1024),
+        pool = sorted((p for p in src.glob("*.jsonl") if 1024 < p.stat().st_size < 2 * 1024 * 1024),
                       key=lambda p: p.stat().st_size)
-        if pool:
-            cand = pool[-1]
+        # 只挑**能解析成 JSON** 的文件：镜像里可能存在被中断留下的空/截断件
+        # （2026-10-26 实测：选到 0 字节文件 → JSONDecodeError，测试假红）
+        for p in reversed(pool):
+            try:
+                text = p.read_bytes().decode("utf-8").rstrip("\n")
+                json.loads(text)
+            except Exception:
+                continue
+            cand, raw = p, text
+            break
     if cand is not None:
-        raw = cand.read_bytes().decode("utf-8").rstrip("\n")
         name = cand.name
     else:
         raw, name = synthetic_sample()

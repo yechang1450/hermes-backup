@@ -805,18 +805,42 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             bp = subprocess.Popen([sys.executable, str(runner), str(helper),
                                    "--home", str(HERMES_HOME), "--out", str(rawdir)],
                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            try:
-                out, err = bp.communicate(timeout=1200)   # 导出阶段预算 20 分钟（实测 210–600s，留 ~2x 余量）
-            except subprocess.TimeoutExpired:
-                # subprocess.run 的超时只杀直接子进程（run_in_runtime 启动器），真正的导出进程
-                # 会活下来占住镜像与各档 state.db —— 下一轮再起一个，两个导出同时写同一批文件
-                # （2026-10-24 实案：连续两轮 3300s 超时，孤儿持 ceo/state.db、RSS 1.6GB）。
-                killed = _kill_tree(bp)
+            # 导出阶段：**不设固定墙钟**，按「有没有进展」判。
+            # 机器被别的活占满时，同一次导出能从 210s 涨到 1200s+（2026-10-26 实案：11:20 轮撞
+            # 1200s 硬预算被掐 → 回退逐档 CLI → 整轮 48 分钟）；反过来，真卡死时它一个字节都不写。
+            # 规则：每 30s 看一次 rawdir 体积，涨了就续期；连续 EXPORT_TIMEOUT 秒不涨才杀整树。
+            EXPORT_TIMEOUT, EXPORT_HARD_CAP = 1200, 3600
+            t_exp = time.time()
+            deadline = t_exp + EXPORT_TIMEOUT
+            last_size, out, err = -1, None, None
+            while True:
+                if time.time() > min(deadline, t_exp + EXPORT_HARD_CAP):
+                    # 杀整树：run_in_runtime 只是启动器，真正的导出进程是孙子——只杀直接子进程
+                    # 会留下孤儿占住镜像与各档 state.db（2026-10-24 实案：连续两轮 3300s 超时）
+                    killed = _kill_tree(bp)
+                    raise RuntimeError(
+                        "export_stalled（批量导出连续 %ds 无进展；已杀进程树 %d 个；累计 %ds）"
+                        % (EXPORT_TIMEOUT, killed, int(time.time() - t_exp)))
                 try:
-                    bp.communicate(timeout=15)
-                except Exception:
-                    pass
-                raise RuntimeError(f"export_timeout（批量导出超过 1200s 预算；已杀进程树 {killed} 个）")
+                    out, err = bp.communicate(timeout=30)
+                    break
+                except subprocess.TimeoutExpired:
+                    # 进展信号必须看**进程 IO**，不能看输出目录：export_all_profiles 是
+                    # 「整档在内存里渲染完才落盘」，main 这种 1.6GB 的档在写文件之前 rawdir 一直是空的
+                    # （2026-10-26 实案：按体积判会把正在干活的导出当卡死掐掉）。
+                    work = None
+                    try:
+                        import psutil
+                        root = psutil.Process(bp.pid)
+                        work = 0
+                        for proc in [root] + root.children(recursive=True):
+                            io = proc.io_counters()
+                            work += io.read_bytes + io.write_bytes
+                    except Exception:
+                        work = None
+                    if work is not None and work > last_size:
+                        last_size = work
+                        deadline = time.time() + EXPORT_TIMEOUT      # 有进展就续期
             if bp.returncode != 0:
                 # 部分档失败不代表全批作废：下面按「缺哪些文件」决定是否回退，缺的档再走 CLI。
                 # 但只有末尾 300 字根本看不出哪档、为什么（2026-10-26 实案：main 缺件、原因被截掉），
@@ -828,8 +852,6 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
                         f"；末尾：{(out or err or '').strip()[-300:]}")
                 except Exception:
                     log(f"批量导出部分失败 rc={bp.returncode}：{(out or err or '').strip()[-300:]}")
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("export_timeout（批量导出超过 1200s 预算）")
         except Exception as e:
             bulk_ok = False
             log(f"批量导出异常 {type(e).__name__}：回退逐档 CLI")

@@ -34,6 +34,7 @@ git -C D:/hermes-backup ls-tree -r -l main | awk '{s+=$4} END {printf "%.2fGB\n"
 | marker 存在（≥3 轮） | 连续失败，数据没坏但没上云 | 处理根因后删 marker，跑一轮 `python scripts/sync.py` 验证 |
 | `exit 3` + `connection closed by 198.18.*` | fake-ip 拦截（代理窗口） | 关掉代理或换 `ssh.github.com:443`；下一轮自愈 |
 | 树体积增速 > 基线（约 9.2MB/小时） | 某个大文件在整份重写 | 跑 `churn-report.py`，看 `>5MB` 里是否同一会话多片 |
+| 一轮超 30 分钟还没结束 | 导出阶段按「进展」判定：有进展会一直续期（硬上限 60 分钟），无进展 20 分钟才杀 | 看 `hb-sync-child.log` 停在哪一步、`hb-bulk-export.log` 有无报错 |
 | 一轮超 15 分钟还没结束 | 有人/别的活在外面抢磁盘（导出阶段实测 210–600s） | 先看 `hb-sync-child.log` 停在哪一步；**别在轮内跑 `selfcheck --audit` 或大测试**（会把它拖到 1200s 预算超时） |
 | 分片末片 ≠ 固定边界 | 阈值/代码变了但数据没重切 | 跑一轮同步让边界归位；`check-parts.py` 复核 |
 | 远端 `.size` 接近 12GB | 该换代了 | 按 `references/generations.md` 跑 `rotate-generation.sh --dry-run` 再真跑 |

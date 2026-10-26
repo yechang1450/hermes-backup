@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 0.4.70
+version: 1.0.0
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -44,6 +44,7 @@ metadata:
 | 文件层恢复 | `python <REPO>/tools/restore_files.py --repo <REPO> --home <HERMES_HOME>` |
 | 会话层恢复 | `python <REPO>/tools/run_in_runtime.py <REPO>/tools/restore_sessions.py --all`（加 `--fast-import`，大型历史实测 2–3 倍速，见 references/session-storage.md） |
 | 拼包（给桌面端导入用） | `python <REPO>/tools/concat_sessions.py main` |
+| 全量自检（一条命令） | `python <SKILL>/scripts/selfcheck.py --repo <REPO>`（`--quick` 跳过镜像项） |
 | 覆盖率审计（镜像 vs 活库） | `python <SKILL>/scripts/audit-coverage.py --repo <REPO> --home <HERMES_HOME>`（PASS 打印 `AUDIT-PASS`，硬伤退出码 1；加 `--with-files` 连文件层一起审） |
 | 数据仓换代（体积到阈值） | `bash <SKILL>/scripts/rotate-generation.sh --from <旧代> --to <新代> --dry-run` 先看计划，再去掉 `--dry-run` 真跑（见 references/generations.md） |
 | 路由回写（微信/QQ 续接） | `python <REPO>/tools/apply_routing.py` |
@@ -69,6 +70,7 @@ metadata:
 - `scripts/test-hb-sentinel.py` — 哨兵分支回归（**10 个场景块**：S1/S1b/S2–S9——①网关重启 / ②静默 5 分钟 / ④长静默恢复 / 新鲜度闸 / 锁跳过 / 失败上报 / 冷启动两态；假 HERMES_HOME＋桩 sync.py，不碰真数据）
 - `scripts/test-hb-health.py` — 健康记账回归（sync.py 单一来源 + 包装"未跑完"补偿去重）
 - `scripts/test-audit-coverage.py` — 覆盖率审计的**负向对照**（8 场景合成夹具：全等 / 缺会话 / 多会话 / 镜像超前 / 镜像落后 / 轮内新建豁免 / 孤立组 / 坏 JSON；证明审计"该红就红"，不碰真库）
+- `scripts/selfcheck.py` — **一条命令全量自检**（编译 + 全部 `test-*.py` + 文档引用完整性 + 可选分片体检/覆盖率审计），末行 `SELFCHECK-PASS/FAIL`；`--quick` 跳镜像项，`--repo <镜像>` 连镜像一起查
 - `scripts/test-split.py` — 分片回归（合成 2MB/100MB/45MB 三条会话、阈值取 `sync.PART_MAX`）：断言每片≤阈值、片数＝ceil(字节/阈值)、按片名拼接后**小会话逐字节相同**、**>5MB 的会话语义等价**（`json.loads` 相同——它们会被尾部稳定化重排成员顺序，不能再用字节相等断言）
 - `scripts/test-layout.py` — 尾部稳定化的回归（6 项：语义等价 / 幂等 / 字段落尾 / 追加后 messages 前缀不变 / 40MB 性能 / 前半段＝KEEP_KEYS 且 messages 收尾）
 - `scripts/churn-report.py` — **单轮重写量**量测器（按目录汇总新增 blob 字节、列 >5MB 改动）：判断「体积增长有没有真被压住」只认它，不看 `--stat` 的文件数/行数；`git --raw` 解析用 `-z`，带空格路径不会错位
@@ -80,6 +82,9 @@ metadata:
 - `scripts/audit-coverage.py` — 覆盖率审计：①会话层（镜像会话文件 vs 活库 state.db 逐会话条数）②文件层（`--with-files`：HERMES_HOME 顶层条目 vs 采集白名单，列出未分类/漏备项）；判据＝硬伤退出码 1
 - `scripts/rotate-generation.sh` — 数据仓换代（**分批种子**推到新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑；分批逻辑在 `seed_generation.sh`）
 - `scripts/seed_generation.sh` — 换代种子（临时 index 逐批 `add -f → write-tree → commit-tree → push`，每批 ≤800MB，绕开单次 push 2GB 上限；可单独对本地裸库自测；校验只认 `refs/heads/main`）
+- `references/backup-scope.md` — **备份范围唯一权威表**（进/不进、原因、怎么改、改完跑什么）；其他文档只许指向它
+- `references/operations.md` — **日常运维一页纸**（每天 30 秒看什么 / 每周跑什么 / 什么信号该动手 / 告警怎么接到人）
+- `CHANGELOG.md` — 版本演进与「踩过的坑怎么修的」
 - `references/pitfalls.md` — **56 条实战坑全文**（会话与分片 / 导出与采集 / git 与推送 / 恢复与迁移 / 哨兵与自愈 / 其它）；排查时先查这份，SKILL 正文只留最常咬人的几条
 - `references/generations.md` — 数据仓「换代」归档预案（体积到阈值时换新代仓、旧仓冻结为只读档案；不重写历史）
 - `templates/RESTORE.md` — 新机恢复手册（编号步骤 + 验收清单）

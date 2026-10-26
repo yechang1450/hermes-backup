@@ -38,6 +38,19 @@ hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-cloud
    python %LOCALAPPDATA%\hermes\skills\hermes-cloud-backup\scripts\sync.py
    ```
 
+## 自检（改完/定期）
+
+```bash
+python scripts/selfcheck.py                          # 约 1 分钟：编译 + 9 套回归 + 文档引用完整性
+python scripts/selfcheck.py --repo D:/hermes-backup  # 追加镜像分片体检（PARTS-OK）
+python scripts/selfcheck.py --repo D:/hermes-backup --audit   # 追加会话层覆盖率审计（2–5 分钟）
+```
+
+末行 `SELFCHECK-PASS` / `SELFCHECK-FAIL`，退出码 0 / 2。**只读**：不写镜像、不碰活库、不联网。
+
+日常该看什么、什么信号该动手 → `references/operations.md`；备份到底备了哪些 → `references/backup-scope.md`；
+版本演进 → `CHANGELOG.md`。
+
 ## 恢复（新机）
 
 把备份仓地址交给新机上的 Hermes Agent（或人）：

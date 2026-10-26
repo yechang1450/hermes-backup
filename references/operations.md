@@ -63,3 +63,14 @@ git -C D:/hermes-backup ls-tree -r -l main | awk '{s+=$4} END {printf "%.2fGB\n"
 3. `state/hb-sync-health.json` → `last_error` 原文
 4. `logs/last-run.log`（镜像内）→ 本轮完整日志
 5. 还有疑问 → `python scripts/selfcheck.py --repo D:/hermes-backup`
+
+## 推送前（30 秒，三道）
+
+```bash
+python scripts/privacy-scan.py                          # 本技能目录
+python scripts/privacy-scan.py --repo <仓> --history    # 目标仓（含全历史）
+```
+
+判据：`PRIVACY-OK` 才算过。**约定**（owner 2026-10-26）：私有仓日常 push 不必请示；公开 / Release /
+npm publish / 加协作者与部署密钥才是需要授权的对外动作。不改写已推历史——历史里发现旧痕迹，只能
+在后续版本移除并在 CHANGELOG 记一笔。

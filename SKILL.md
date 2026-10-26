@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 1.0.4
+version: 1.0.5
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -71,6 +71,7 @@ metadata:
 - `scripts/test-hb-health.py` — 健康记账回归（sync.py 单一来源 + 包装"未跑完"补偿去重）
 - `scripts/test-audit-coverage.py` — 覆盖率审计的**负向对照**（8 场景合成夹具：全等 / 缺会话 / 多会话 / 镜像超前 / 镜像落后 / 轮内新建豁免 / 孤立组 / 坏 JSON；证明审计"该红就红"，不碰真库）
 - `scripts/selfcheck.py` — **一条命令全量自检**（编译 + 全部 `test-*.py` + 文档引用完整性 + 可选分片体检/覆盖率审计），末行 `SELFCHECK-PASS/FAIL`；`--quick` 跳镜像项，`--repo <镜像>` 连镜像一起查
+- `scripts/privacy-scan.py` — **推前三道自检**（凭据文件 / 真实私人信息 / 本机绝对路径；`--repo <仓> --history` 连全历史扫）；命中退出码 2
 - `scripts/test-split.py` — 分片回归（合成 2MB/100MB/45MB 三条会话、阈值取 `sync.PART_MAX`）：断言每片≤阈值、片数＝ceil(字节/阈值)、按片名拼接后**小会话逐字节相同**、**>5MB 的会话语义等价**（`json.loads` 相同——它们会被尾部稳定化重排成员顺序，不能再用字节相等断言）
 - `scripts/test-layout.py` — 尾部稳定化的回归（6 项：语义等价 / 幂等 / 字段落尾 / 追加后 messages 前缀不变 / 40MB 性能 / 前半段＝KEEP_KEYS 且 messages 收尾）
 - `scripts/churn-report.py` — **单轮重写量**量测器（按目录汇总新增 blob 字节、列 >5MB 改动）：判断「体积增长有没有真被压住」只认它，不看 `--stat` 的文件数/行数；`git --raw` 解析用 `-z`，带空格路径不会错位

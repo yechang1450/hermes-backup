@@ -131,6 +131,12 @@ def doc_refs(results: list) -> None:
           else f"{len(missing)} 处: {missing[:3]}"), results)
 
 
+def privacy_check(results: list) -> None:
+    """推前三道（凭据 / 真实私人信息 / 本机绝对路径）——见 scripts/privacy-scan.py。"""
+    rc, last = run([PY, str(HERE / "privacy-scan.py")], timeout=180)
+    step("公开面卫生（凭据/隐私/路径）", rc, last, results)
+
+
 def parts_check(repo: str, results: list) -> None:
     rc, last = run([PY, str(HERE / "check-parts.py"), "--repo", repo])
     step("镜像分片体检", rc, last, results)
@@ -157,6 +163,7 @@ def main() -> int:
     compile_all(results)
     run_tests(results)
     doc_refs(results)
+    privacy_check(results)
     if a.repo:
         if Path(a.repo).is_dir():
             parts_check(a.repo, results)

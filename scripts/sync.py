@@ -622,7 +622,10 @@ def ensure_private(report: dict, allow_unverified: bool = False) -> bool:
         p = subprocess.run([gh, "api", f"repos/{slug}", "--jq", ".private"],
                            capture_output=True, text=True)
     if p.returncode != 0:
-        return _unverifiable(f"私有性查询失败：{(p.stderr or '').strip()[:120]}")
+        # 2026-10-26 实案：日志只有「私有性查询失败： ——」，因为 gh 网络失败时 stderr 是空的。
+        # 一律带上 rc 与可见输出，否则下一次没人知道是网络、凭据还是仓库名错。
+        detail = ((p.stderr or "").strip() or (p.stdout or "").strip() or "无输出")[:160]
+        return _unverifiable(f"私有性查询失败 rc={p.returncode}：{detail}")
     if p.stdout.strip().lower() == "true":
         report["private_check"] = "已确认私有"
         return True

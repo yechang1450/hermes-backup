@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 1.0.8
+version: 1.0.9
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -77,6 +77,8 @@ metadata:
 - `scripts/churn-report.py` — **单轮重写量**量测器（按目录汇总新增 blob 字节、列 >5MB 改动）：判断「体积增长有没有真被压住」只认它，不看 `--stat` 的文件数/行数；`git --raw` 解析用 `-z`，带空格路径不会错位
 - `scripts/session_layout.py` — 会话 JSON 的尾部稳定化（零解析扫描；**只留身份字段＋`messages` 在前，其余成员全部移到对象末尾**）
 - `scripts/test-reap-exporters.py` — 孤儿导出回收回归（3 场景：孤儿被杀 / 父进程健在者不动 / 命令行只提到文件名者不杀）
+- `scripts/test-zero-session.py` — 零产出保护回归（5 项：0 会话 + 有历史 ⇒ 判失败并保留旧文件 / 空档不误判 / 有产出不干预 / prune 后旧文件仍在）
+- `scripts/test-prune-protect.py` — 整档删除授权与快照回退互递归的回归（S1–S5）
 - `scripts/test-kanban-snapshot.py` — SQLite 在线快照回归（3 项：WAL 下快照可正常打开 / 表结构与行数一致 / 普通拷贝的反例）
 - `scripts/test-kanban-scope.py` — kanban 采集范围回归（5 项：只备 boards 板库 / 不备工作区 db / 顶层 kanban.db / 走快照 API / **prune 之后板库仍在**）
 - `scripts/check-parts.py` — 镜像分片形态体检（P1 编号连续 / P2 除末片外每片正好 PART_MAX / P3 末片合规 / P4 无形态混用；`PARTS-FAIL` 退出码 1）。改切片代码后用它验收「数据是否真的归位」
@@ -138,7 +140,9 @@ metadata:
 **62 条实战坑全文在 [`references/pitfalls.md`](references/pitfalls.md)**（按主题分组：会话与分片 / 导出与采集 / git 与推送 / 恢复与迁移 / 哨兵与自愈 / 其它）。排查先看那一份，这里只留最常咬人的几条：
 
 - **会话是「一行=一个会话」**：头部统计字段每轮都变 ⇒ 必须靠 `session_layout` 的**尾部稳定化**（反向白名单）＋**固定偏移**分片（12MB，边界不得随总长浮动），否则每轮重写整批分片。
-- **整档删除必须显式授权**：某档导出失败/零产出时**绝不能**把 `sessions/<档>` 清空再推；`prune_stale(..., allow_delete=…)` 只删「活库确认已不存在」的档。
+- **「0 产出」必须当失败处理**：`rc=0` 且 0 个会话 **≠ 成功**——只要该档历史上已有文件，就判失败、旧文件全部保留、本轮不许 prune 它（`guard_zero_sessions()`，回归 `test-zero-session.py` 5 项），整轮记 **`exit 5`** 而不是 0（其它档照常提交推送，健康计数照记）。实案：一轮 `export main: sessions=0 files=0`（内存不足）把 `sessions/main` 的 1,470 个会话文件整目录删掉并推送，整轮还报 exit 0。`prune_stale(..., allow_delete=…)` 只删「已确认活库里不存在」的档。
+- **导出内存：整档渲染会 MemoryError，必须分块**：`render_sessions_export(全部会话)` 会把整档拼成一个字符串（main 约 1.6GB）；改成按**同一份 `sessions` 列表**切块（`CHUNK=4`）逐块写，输出与整档渲染逐字节等价（sha256 实测一致）。**不要**改成「按 id 逐个 `export_session()`」——`export_all()` 会对 `tool_names` 等字段做后处理（哈希），两者 sha256 不同。
+- **导出超时按「有没有进展」判，不按固定墙钟**：机器被别的活占满时同一轮导出能从 210s 涨到 1200s+（固定 20 分钟预算会掐死正在干活的导出，回退逐档 CLI 反而更慢）。改成每 30s 看**进程 IO**（不能看输出目录——整档渲染完才落盘，目录一直是空的），涨就续期，连续 1200s 不涨才杀整树，硬上限 3600s。
 - **私有性检查 fail-closed**：属主解析不到 / `gh` 不可用 / 查询失败 ⇒ **拒绝推送**（显式 `--allow-unverified-privacy` 才放行）；这个仓里是凭据与私人对话。
 - **恢复脚本必须经 `run_in_runtime.py`**：直接 `python restore_sessions.py` 会因缺运行期依赖报 `ModuleNotFoundError: ruamel`。
 - **恢复时「0 个会话」= 失败**（rc=2）：指错 `--source` 不该安静成功。
@@ -162,8 +166,8 @@ metadata:
 
 ## Verification
 
-- **回归总闸：改过存储格式 / 采集白名单 / 审计器 / kanban 任一处，就把这 9 套全跑一遍再收工**（都在 `scripts/`，纯标准库、各自不碰真库）：
-  `test-layout.py`(6) · `test-split.py`(ALL-PASS，阈值直读 `sync.PART_MAX`) · `test-audit-coverage.py`(8) · `test-hb-sentinel.py`(12) · `test-hb-health.py` · `test-kanban-snapshot.py`(3) · `test-kanban-scope.py`(5) · `test-reap-exporters.py`(3)。
+- **回归总闸：改过存储格式 / 采集白名单 / 审计器 / kanban 任一处，就把这 10 套全跑一遍再收工**（都在 `scripts/`，纯标准库、各自不碰真库）：
+  `test-layout.py`(6) · `test-split.py`(ALL-PASS，阈值直读 `sync.PART_MAX`) · `test-audit-coverage.py`(8) · `test-hb-sentinel.py`(12) · `test-hb-health.py` · `test-kanban-snapshot.py`(3) · `test-kanban-scope.py`(5) · `test-reap-exporters.py`(3) · `test-prune-protect.py`(5) · `test-zero-session.py`(5)。一条命令跑全：`scripts/selfcheck.py`。
   校验判据是**每套自己打印的「N 项，失败 0」**，不是 rc=0（脚本可能在断言前就因语法/路径错退出）。改阈值类常量时，测试要读运行时值（`sync.PART_MAX`）而不是抄一个字面量——两处各写一个数就会「测试绿、生产红」的反向事故。
 - **`--collect-only` 不是快速探针**：它只跳过 git 段，**导出照跑**（本机实测约 10 分钟）——想验证采集正确性（白名单、快照、prune）值得跑，想「看一眼状态」就别用它。跑完镜像里是未提交改动，别当成异常；下一轮会连带提交。
 - 同步后：`meta/sync-state.json` 的 `pushed` 为 true；`git ls-remote origin` 与本地提交一致。

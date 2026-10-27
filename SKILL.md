@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 1.0.9
+version: 1.0.10
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -44,7 +44,7 @@ metadata:
 | 文件层恢复 | `python <REPO>/tools/restore_files.py --repo <REPO> --home <HERMES_HOME>` |
 | 会话层恢复 | `python <REPO>/tools/run_in_runtime.py <REPO>/tools/restore_sessions.py --all`（加 `--fast-import`，大型历史实测 2–3 倍速，见 references/session-storage.md） |
 | 拼包（给桌面端导入用） | `python <REPO>/tools/concat_sessions.py main` |
-| 全量自检（一条命令） | `python <SKILL>/scripts/selfcheck.py --repo <REPO>`（`--quick` 跳过镜像项） |
+| 全量自检（一条命令） | `python <SKILL>/scripts/selfcheck.py --repo <REPO>`（默认 13 项：编译／9 套回归／文档引用／公开面卫生／分片体检；加 `--audit` 再跑会话层覆盖率审计） |
 | 覆盖率审计（镜像 vs 活库） | `python <SKILL>/scripts/audit-coverage.py --repo <REPO> --home <HERMES_HOME>`（PASS 打印 `AUDIT-PASS`，硬伤退出码 1；加 `--with-files` 连文件层一起审） |
 | 数据仓换代（体积到阈值） | `bash <SKILL>/scripts/rotate-generation.sh --from <旧代> --to <新代> --dry-run` 先看计划，再去掉 `--dry-run` 真跑（见 references/generations.md） |
 | 路由回写（微信/QQ 续接） | `python <REPO>/tools/apply_routing.py` |
@@ -70,7 +70,7 @@ metadata:
 - `scripts/test-hb-sentinel.py` — 哨兵分支回归（**10 个场景块**：S1/S1b/S2–S9——①网关重启 / ②静默 5 分钟 / ④长静默恢复 / 新鲜度闸 / 锁跳过 / 失败上报 / 冷启动两态；假 HERMES_HOME＋桩 sync.py，不碰真数据）
 - `scripts/test-hb-health.py` — 健康记账回归（sync.py 单一来源 + 包装"未跑完"补偿去重）
 - `scripts/test-audit-coverage.py` — 覆盖率审计的**负向对照**（8 场景合成夹具：全等 / 缺会话 / 多会话 / 镜像超前 / 镜像落后 / 轮内新建豁免 / 孤立组 / 坏 JSON；证明审计"该红就红"，不碰真库）
-- `scripts/selfcheck.py` — **一条命令全量自检**（编译 + 全部 `test-*.py` + 文档引用完整性 + 可选分片体检/覆盖率审计），末行 `SELFCHECK-PASS/FAIL`；`--quick` 跳镜像项，`--repo <镜像>` 连镜像一起查
+- `scripts/selfcheck.py` — **一条命令全量自检**：编译 + 全部 `test-*.py` + 文档引用完整性 + **公开面卫生**（`privacy-scan`）＋（`--repo` 时）分片体检＋（`--audit` 时）会话层覆盖率审计；末行 `SELFCHECK-PASS/FAIL`，退出码 0/2。**只读**：不写镜像、不碰活库。有同步轮在跑时会先告警（自检抢磁盘会把那一轮拖成超时）
 - `scripts/privacy-scan.py` — **推前三道自检**（凭据文件 / 真实私人信息 / 本机绝对路径；`--repo <仓> --history` 连全历史扫）；命中退出码 2
 - `scripts/test-split.py` — 分片回归（合成 2MB/100MB/45MB 三条会话、阈值取 `sync.PART_MAX`）：断言每片≤阈值、片数＝ceil(字节/阈值)、按片名拼接后**小会话逐字节相同**、**>5MB 的会话语义等价**（`json.loads` 相同——它们会被尾部稳定化重排成员顺序，不能再用字节相等断言）
 - `scripts/test-layout.py` — 尾部稳定化的回归（6 项：语义等价 / 幂等 / 字段落尾 / 追加后 messages 前缀不变 / 40MB 性能 / 前半段＝KEEP_KEYS 且 messages 收尾）
@@ -83,12 +83,12 @@ metadata:
 - `scripts/test-kanban-scope.py` — kanban 采集范围回归（5 项：只备 boards 板库 / 不备工作区 db / 顶层 kanban.db / 走快照 API / **prune 之后板库仍在**）
 - `scripts/check-parts.py` — 镜像分片形态体检（P1 编号连续 / P2 除末片外每片正好 PART_MAX / P3 末片合规 / P4 无形态混用；`PARTS-FAIL` 退出码 1）。改切片代码后用它验收「数据是否真的归位」
 - `scripts/audit-coverage.py` — 覆盖率审计：①会话层（镜像会话文件 vs 活库 state.db 逐会话条数）②文件层（`--with-files`：HERMES_HOME 顶层条目 vs 采集白名单，列出未分类/漏备项）；判据＝硬伤退出码 1
-- `scripts/rotate-generation.sh` — 数据仓换代（**分批种子**推到新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑；分批逻辑在 `seed_generation.sh`）
-- `scripts/seed_generation.sh` — 换代种子（临时 index 逐批 `add -f → write-tree → commit-tree → push`，每批 ≤800MB，绕开单次 push 2GB 上限；可单独对本地裸库自测；校验只认 `refs/heads/main`）
+- `scripts/rotate-generation.sh` — 数据仓换代（**分批种子**推到新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑）。锁**判活**用 psutil（MSYS 的 `kill -0` 看不到原生 Windows 进程，会把活锁当死锁）；工作树有改动时不硬退——桌面端 leveldb 一直在写，永远等不到“干净”，真跑先提交收口（并尝试推送一次）再换代
+- `scripts/seed_generation.sh` — 换代种子：整轮**钉住开始时的 `BASE` commit**（分批／组树／计数全读 `BASE`，不碰工作树），每批 `read-tree "$BASE"` + `update-index --force-remove -z --stdin` 反向删掉本批之外的路径，第 i 棵树＝前 i 批的**并集**（累积），分批 push（每批 ≤800MB，绕开单次 2GB 上限），末树必须等于 `BASE^{tree}`；可单独对本地裸库自测（第二遍应为 **no-op**）；校验只认 `refs/heads/main`。历史老写法（按 `ls-files` 名单 `git add`）**已被真实环境否掉**，见 pitfalls ④⑤⑥
 - `references/backup-scope.md` — **备份范围唯一权威表**（进/不进、原因、怎么改、改完跑什么）；其他文档只许指向它
 - `references/operations.md` — **日常运维一页纸**（每天 30 秒看什么 / 每周跑什么 / 什么信号该动手 / 告警怎么接到人）
 - `CHANGELOG.md` — 版本演进与「踩过的坑怎么修的」
-- `references/pitfalls.md` — **56 条实战坑全文**（会话与分片 / 导出与采集 / git 与推送 / 恢复与迁移 / 哨兵与自愈 / 其它）；排查时先查这份，SKILL 正文只留最常咬人的几条
+- `references/pitfalls.md` — **实战坑全文**（按 6 组主题分类；条数随修随增，别在文档里写死数字）；排查时先查这份，SKILL 正文只留最常咬人的几条
 - `references/generations.md` — 数据仓「换代」归档预案（体积到阈值时换新代仓、旧仓冻结为只读档案；不重写历史）
 - `templates/RESTORE.md` — 新机恢复手册（编号步骤 + 验收清单）
 - `references/session-storage.md` — 会话存储格式与历史体积机制（v0.3 原样文本格式、实测方法、GitHub 链路限制）
@@ -149,7 +149,7 @@ metadata:
 - **批量导出缺 `export_all_profiles.py` 会静默变慢 3–5 倍**；`HERMES_HOME/scripts/sync.py` 若存在只能是**转调壳**，不能是副本。
 - **哨兵看锁的活性**（读 pid），死锁不该永久挡住补跑；`overdue` 另有 `overdue-no-state` 覆盖「从未成功过」。
 - **判容量看 `gh api … --jq .size`**，`churn-report.py` 量的是「新增 blob 字节」，不是仓体积增长。
-- **换代**：阈值 12GB、孤儿快照**分批推送**（单次 push 上限 2GB）、旧仓 `archived=true`。
+- **换代**：判据是「常规轮 push >10 分钟 / 克隆 >15 分钟 / `.size` >8GB / 历史占比 >20%」，**不是「体积到 12GB」**；孤儿快照**分批推送**（单次 push 上限 2GB）、旧仓 `archived=true`。换算不了：`.size` ≈ 树（历史只多 1.6%），换代不会重置树的增长。
 
 ## 更新 / 重启后自检（约 5 分钟；官方版本变了必跑）
 

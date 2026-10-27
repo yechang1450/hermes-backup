@@ -74,3 +74,12 @@ python scripts/selfcheck.py --repo D:/hermes-backup --audit   # 追加会话层�
 ## License
 
 MIT
+
+## 许可与权利
+
+Copyright © 2026 yechang1450. All rights reserved.
+
+No additional license or permission is granted. 本仓未提供开源许可：
+源码公开可读，但不构成任何使用、复制、修改或再分发的授权；如需授权请另行联系作者。
+
+受 GitHub 服务条款约束的浏览与 fork 不受此声明影响。

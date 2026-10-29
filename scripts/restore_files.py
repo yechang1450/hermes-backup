@@ -5,9 +5,9 @@
 纯标准库，任意 python 均可运行。
 
 用法:
-    python restore_files.py --repo D:\\hermes-backup --dry-run          # 先看会写哪些，不动任何东西
-    python restore_files.py --repo D:\\hermes-backup --home <HERMES_HOME>
-    python restore_files.py --repo D:\\hermes-backup --what profiles --no-backup
+    python restore_files.py --repo ~/hermes-backup --dry-run          # 先看会写哪些，不动任何东西
+    python restore_files.py --repo ~/hermes-backup --home <HERMES_HOME>
+    python restore_files.py --repo ~/hermes-backup --what profiles --no-backup
 
 安全约定（2026-10-26 加）：
   · `--dry-run` 只列计划：不建目录、不写文件、不做备份。

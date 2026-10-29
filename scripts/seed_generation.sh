@@ -10,7 +10,7 @@
 # 从 HEAD 组装则完全无竞态，且最终树必然 == `HEAD^{tree}`（可直接对哈希）。
 #
 # 用法：bash scripts/seed_generation.sh <mirror> <remote-url> [batch_mb]
-#   例：bash scripts/seed_generation.sh D:/hermes-backup ssh://git@ssh.github.com:443/me/newrepo.git 800
+#   例：bash scripts/seed_generation.sh ~/hermes-backup ssh://git@ssh.github.com:443/me/newrepo.git 800
 # 幂等：远端 main 若已等于最终树，则不再推（可重复跑，第二遍应为 no-op）。
 # 输出：最后一行打印 `SEED-OK <commit>`，失败则非零退出。
 set -euo pipefail

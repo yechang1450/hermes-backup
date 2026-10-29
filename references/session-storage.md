@@ -151,7 +151,7 @@ git -C <repo> diff --numstat HEAD~1 HEAD | awk '{split($3,p,"/"); d=p[1]"/"p[2];
 演练证明"镜像能恢复"，这个工具回答另一半：**镜像里装的是不是活库的全部内容**。
 
 ```bash
-python scripts/audit-coverage.py --repo D:/hermes-backup --home %LOCALAPPDATA%/hermes [--json out.json]
+python scripts/audit-coverage.py --repo ~/hermes-backup --home %LOCALAPPDATA%/hermes [--json out.json]
 ```
 
 判据（硬伤 ⇒ 退出码 1）：

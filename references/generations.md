@@ -52,19 +52,19 @@
 ## 手工步骤（等价，供核对/兜底；约 1–2 小时，可分两次做）
 ```bash
 # 0) 前置：镜像干净、本地=远端、无同步在跑（锁不存在）
-git -C D:/hermes-backup status --porcelain          # 应为空
-git -C D:/hermes-backup rev-parse HEAD              # 与 ls-remote 一致
+git -C ~/hermes-backup status --porcelain          # 应为空
+git -C ~/hermes-backup rev-parse HEAD              # 与 ls-remote 一致
 # 1) 压缩本地对象（可选但建议；让首次推送的包更小）
-git -C D:/hermes-backup gc --quiet
+git -C ~/hermes-backup gc --quiet
 # 2) 建新代私有仓（名字：hermes-backup-<YYYYqN>，如 hermes-backup-2026q4）
 gh repo create <owner>/hermes-backup-2026q4 --private
 # 3) 从镜像推一份全量到新仓
-git -C D:/hermes-backup remote add gen2 git@github.com:<owner>/hermes-backup-2026q4.git
-git -C D:/hermes-backup push -u gen2 main
+git -C ~/hermes-backup remote add gen2 git@github.com:<owner>/hermes-backup-2026q4.git
+git -C ~/hermes-backup push -u gen2 main
 # 4) 校验：远端 HEAD 与本地一致；另起干净目录克隆抽查（文件数 + 恢复冒烟）
-git -C D:/hermes-backup ls-remote gen2 HEAD
+git -C ~/hermes-backup ls-remote gen2 HEAD
 # 5) 切默认：把 mirror 的 origin 指向新仓 + 同步脚本默认 repo-name 改为新名
-git -C D:/hermes-backup remote set-url origin git@github.com:<owner>/hermes-backup-2026q4.git
+git -C ~/hermes-backup remote set-url origin git@github.com:<owner>/hermes-backup-2026q4.git
 #    改技能目录 local.json 的 `repo` 字段（或镜像 origin）→ 新代名；发新版本（升 version）
 # 6) 跑一轮真实同步，确认提交落到新仓（git ls-remote origin HEAD == 本地 HEAD）
 # 7) 归档旧仓（只读，但仍可克隆）
@@ -80,7 +80,7 @@ gh api -X PATCH repos/<owner>/hermes-backup -f archived=true
 bash scripts/rotate-generation.sh --from <当前代仓名> --to <新代仓名> --dry-run
 # 真跑（幂等、可续跑；全程持 sync 锁，sync 会主动让路）
 bash scripts/rotate-generation.sh --from <当前代仓名> --to <新代仓名>
-# 可选：--mirror D:/hermes-backup  --owner <gh-user>  --skip-archive
+# 可选：--mirror ~/hermes-backup  --owner <gh-user>  --skip-archive
 ```
 
 脚本做的事＝下面手工步骤 1–8 的自动化版本，额外保证：

@@ -11,8 +11,8 @@
 也不满，说明这批文件还是别的切法（例如试过的「末片上限」方案），必须跑一轮真同步让它归位。
 
 用法：
-  python check-parts.py --repo D:/hermes-backup
-  python check-parts.py --repo D:/hermes-backup --profiles main,proj-83 --json
+  python check-parts.py --repo ~/hermes-backup
+  python check-parts.py --repo ~/hermes-backup --profiles main,proj-83 --json
 退出码：0 全通过 / 1 有违例 / 2 参数错误
 """
 from __future__ import annotations

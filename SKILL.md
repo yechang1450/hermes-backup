@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 1.0.10
+version: 1.0.11
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -13,13 +13,13 @@ metadata:
 
 # hermes-cloud-backup — Hermes 数据云备份 / 恢复
 
-> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/main:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。⑧**公开仓零本机痕迹**：脚本/测试里不得出现 `C:/Users/<名>` 这类绝对路径（既泄露用户名，又让测试换机即败）——一律按 `Path(__file__).resolve().parent` 拼；发布前用 `grep -rn "C:/Users/" scripts/` 扫一遍。
+> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/main:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。⑧**公开仓零本机痕迹**：脚本/测试里不得出现 `C:/Users/<名>` 这类绝对路径（既泄露用户名，又让测试换机即败）——一律按 `Path(__file__).resolve().parent` 拼；发布前用 `grep -rn "C:/Users/" scripts/` 扫一遍。⑨**文档里不写死可增长的数量**（几条坑 / 几套测试 / 几个场景 / 几个脚本）：每加一条就要回来改 SKILL、references、README 三处，漏改了也没人报错（实见同一份文档里「62 条」「8 套」「10 个场景」「9 套」四处同时过期）。要么写「以 `ls scripts/test-*.py | wc -l` 为准」，要么只给末行判据；能写死的只有能对回 `sync.py` 同一行的**代码常量**（分片阈值 / 超时 / 体积闸）。
 
 把本机 Hermes 的全部状态（配置/凭据/记忆/技能/会话/桌面端数据）**线性同步**到一个
 **私有 GitHub 仓**（默认 `hermes-backup`，唯一权威版本在 GitHub），并支持在任何新机上
 从该仓**一键恢复到重装前状态**。本技能含两套流程：**日常同步**（源机）与**新机恢复**（目标机）。
 
-架构一句话：镜像工作区 `D:\hermes-backup` 采集本机数据 → commit → push；恢复方向相反。
+架构一句话：镜像工作区 `~/hermes-backup` 采集本机数据 → commit → push；恢复方向相反。
 
 ## When to Use
 
@@ -50,7 +50,7 @@ metadata:
 | 路由回写（微信/QQ 续接） | `python <REPO>/tools/apply_routing.py` |
 | 桌面端收尾器 | `pwsh -NoProfile -File <REPO>/tools/finish_restore.ps1 -Repo <REPO>` |
 
-> **两个 `tools/` 别搞混**：`<REPO>/tools/` 只在**备份仓 clone 目录**里（每轮同步时由本技能 `scripts/` 复制过去，`D:/hermes-backup/tools/` 就是它）；**技能仓本身只有 `scripts/`，没有 `tools/`**。所以恢复类命令要在备份仓目录下跑，同步/审计/换代类命令用 `<SKILL>/scripts/`。
+> **两个 `tools/` 别搞混**：`<REPO>/tools/` 只在**备份仓 clone 目录**里（每轮同步时由本技能 `scripts/` 复制过去，`~/hermes-backup/tools/` 就是它）；**技能仓本身只有 `scripts/`，没有 `tools/`**。所以恢复类命令要在备份仓目录下跑，同步/审计/换代类命令用 `<SKILL>/scripts/`。
 
 > 机器本地配置（镜像目录、同步默认仓名）放技能目录 `local.json` 的 `mirror` / `repo` 两项（不进任何仓库）；镜像目录默认自动探测，`--mirror` 可指定；镜像已有 origin 时仓名以 origin 为准（换代脚本会同时改写 origin 与 `local.json`，代码里不写死代名）。
 
@@ -67,7 +67,7 @@ metadata:
 - `scripts/hb-autosync.py` — 周期同步（③每 2 小时；安装方式同上）；与哨兵共用 `state/hb-sync-child.log`（子进程输出流式落盘）与 `state/hb-sync-health.json`（连续失败计数 + needs-attention 标记）
 - `scripts/export_all_profiles.py` — 单进程批量会话导出（sync 提速件；直调官方导出函数，与 CLI 输出逐字节一致，失败自动回退逐档 CLI）
 - `scripts/verify_drill.py` — 演练对账器（镜像会话文件 vs 沙箱 DB 逐会话比对；`restore-drill.md` 第 6 步的现成实现，参数＝沙箱根目录）
-- `scripts/test-hb-sentinel.py` — 哨兵分支回归（**10 个场景块**：S1/S1b/S2–S9——①网关重启 / ②静默 5 分钟 / ④长静默恢复 / 新鲜度闸 / 锁跳过 / 失败上报 / 冷启动两态；假 HERMES_HOME＋桩 sync.py，不碰真数据）
+- `scripts/test-hb-sentinel.py` — 哨兵分支回归（**12 个场景块**：S1/S1b/S2–S9/S5b/S10——①网关重启 / ②静默 5 分钟 / ④长静默恢复 / 新鲜度闸 / 锁跳过（活 pid vs 死 pid）/ 失败上报 / 冷启动两态 / 首轮失败重试；假 HERMES_HOME＋桩 sync.py，不碰真数据）。**别在文档里写死场景数**——加一个分支就得改三处，直接说「跑通即看末行『总判定：PASS』」
 - `scripts/test-hb-health.py` — 健康记账回归（sync.py 单一来源 + 包装"未跑完"补偿去重）
 - `scripts/test-audit-coverage.py` — 覆盖率审计的**负向对照**（8 场景合成夹具：全等 / 缺会话 / 多会话 / 镜像超前 / 镜像落后 / 轮内新建豁免 / 孤立组 / 坏 JSON；证明审计"该红就红"，不碰真库）
 - `scripts/selfcheck.py` — **一条命令全量自检**：编译 + 全部 `test-*.py` + 文档引用完整性 + **公开面卫生**（`privacy-scan`）＋（`--repo` 时）分片体检＋（`--audit` 时）会话层覆盖率审计；末行 `SELFCHECK-PASS/FAIL`，退出码 0/2。**只读**：不写镜像、不碰活库。有同步轮在跑时会先告警（自检抢磁盘会把那一轮拖成超时）
@@ -119,7 +119,7 @@ metadata:
 
 **严格按 `templates/RESTORE.md` 的编号步骤执行**。要点顺序（此顺序有依赖，勿打乱）：
 
-1. clone 备份仓到本机（`git clone git@github.com:<owner>/hermes-backup.git D:\hermes-backup`）。
+1. clone 备份仓到本机（`git clone git@github.com:<owner>/hermes-backup.git ~/hermes-backup`）。
 2. 文件层覆盖（含覆盖前自动备份旧件到 `restore-out/pre-restore-backup/`）。
 3. 会话层导入（走官方 `SessionDB.import_sessions` 管线；本工具进程内放宽官方导入尺寸上限，以恢复含超大档在内的全部历史；已存在的会话自动跳过，可重复跑）。
 4. 路由回写（微信/QQ 线程 → 会话映射）。
@@ -137,7 +137,7 @@ metadata:
 
 ## Pitfalls
 
-**62 条实战坑全文在 [`references/pitfalls.md`](references/pitfalls.md)**（按主题分组：会话与分片 / 导出与采集 / git 与推送 / 恢复与迁移 / 哨兵与自愈 / 其它）。排查先看那一份，这里只留最常咬人的几条：
+**实战坑全文在 [`references/pitfalls.md`](references/pitfalls.md)**（按主题分组：会话与分片 / 导出与采集 / git 与推送 / 恢复与迁移 / 哨兵与自愈 / 运行环境与并发 / 其它；**条数随修随增，文档里不写死数字**）。排查先看那一份，这里只留最常咬人的几条：
 
 - **会话是「一行=一个会话」**：头部统计字段每轮都变 ⇒ 必须靠 `session_layout` 的**尾部稳定化**（反向白名单）＋**固定偏移**分片（12MB，边界不得随总长浮动），否则每轮重写整批分片。
 - **「0 产出」必须当失败处理**：`rc=0` 且 0 个会话 **≠ 成功**——只要该档历史上已有文件，就判失败、旧文件全部保留、本轮不许 prune 它（`guard_zero_sessions()`，回归 `test-zero-session.py` 5 项），整轮记 **`exit 5`** 而不是 0（其它档照常提交推送，健康计数照记）。实案：一轮 `export main: sessions=0 files=0`（内存不足）把 `sessions/main` 的 1,470 个会话文件整目录删掉并推送，整轮还报 exit 0。`prune_stale(..., allow_delete=…)` 只删「已确认活库里不存在」的档。

@@ -141,7 +141,7 @@ def bump_unfinished(start_ts: float, reason: str) -> int:
 
 def mirror_meta() -> Path:
     base = os.environ.get("HERMES_BACKUP_MIRROR")
-    cands = [Path(base)] if base else [Path("D:/hermes-backup"), Path.home() / "hermes-backup"]
+    cands = [Path(base)] if base else [(Path.home() / "hermes-backup"), Path.home() / "hermes-backup"]
     for c in cands:
         if (c / "meta" / "sync-state.json").is_file():
             return c / "meta" / "sync-state.json"

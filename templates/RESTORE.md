@@ -24,11 +24,11 @@
 
 ```bash
 # A) 全量（要恢复全部档、全部文件时用；仓可能到 10GB 级）
-git clone <备份仓地址> D:\hermes-backup
+git clone <备份仓地址> ~/hermes-backup
 
 # B) 只要某几档的会话时：部分克隆 + 稀疏检出（实测只要 sessions/main 时 1.9GB，全量 3.3GB）
-git clone --filter=blob:none --no-checkout <备份仓地址> D:\hermes-backup
-cd D:\hermes-backup
+git clone --filter=blob:none --no-checkout <备份仓地址> ~/hermes-backup
+cd ~/hermes-backup
 git sparse-checkout init --cone
 git sparse-checkout set sessions/main tools templates      # 需要哪档就写哪档
 git checkout
@@ -36,18 +36,18 @@ git checkout
 > B 的收益只在"只要一部分"时成立；要恢复全部档就用 A，别折腾稀疏。
 > 两者都可续跑：网络中断后在同目录 `git checkout` 或 `git fetch` 接着来。
 
-（克隆目录任意；下文以 `D:/hermes-backup` 为例。）
+（克隆目录任意；下文以 `~/hermes-backup` 为例。）
 
 > **实测参考（2026-10-25，全新机器视角）**：`--depth 1` 克隆 3.3GB 树的仓，**393 秒**完成、落地 **4.5GB**（工作树 3.3GB + `.git` 1.2GB）；随后恢复一个档（proj-83，136 会话 / 27,249 条）**29 秒**、`verify_failed=0`。
-完成标准：`D:\hermes-backup\home-overlay\`、`profiles-overlay\`、`sessions\`、`tools\` 在位（B 方式下只保证你 set 的那些路径）。
+完成标准：`~/hermes-backup\home-overlay\`、`profiles-overlay\`、`sessions\`、`tools\` 在位（B 方式下只保证你 set 的那些路径）。
 
 ## 2. 恢复文件层（配置/凭据/记忆/技能/cron/看板 + 各 bot 档）
 
 ```
 # 先看计划（只读，不建目录、不写文件、不做备份）：
-python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup --dry-run
+python ~/hermes-backup\tools\restore_files.py --repo ~/hermes-backup --dry-run
 # 确认无误再真覆盖（去掉 --dry-run）。新机 HERMES_HOME 还不存在时要加 --create：
-python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup --create
+python ~/hermes-backup\tools\restore_files.py --repo ~/hermes-backup --create
 ```
 - 默认覆盖 `home-overlay/` → `%LOCALAPPDATA%\hermes\`，`profiles-overlay/<档>/` → `profiles\<档>\`。
 - `--dry-run` 只列「将覆盖多少文件 + 前 10 个路径」，**不建目录、不写文件、不做备份**。
@@ -58,7 +58,7 @@ python D:\hermes-backup\tools\restore_files.py --repo D:\hermes-backup --create
 ## 3. 恢复会话层（全部历史对话）
 
 ```
-python D:\hermes-backup\tools\run_in_runtime.py D:\hermes-backup\tools\restore_sessions.py --all --fast-import
+python ~/hermes-backup\tools\run_in_runtime.py ~/hermes-backup\tools\restore_sessions.py --all --fast-import
 ```
 - 走官方 `SessionDB.import_sessions` 管线（与桌面端「导入」按钮同一代码路径）；进程内放宽官方导入尺寸上限以恢复超大档。
 - 已存在的会话自动跳过（幂等）；逐个会话打印 `+ 已导入 / = 已存在`。
@@ -69,7 +69,7 @@ python D:\hermes-backup\tools\run_in_runtime.py D:\hermes-backup\tools\restore_s
 ## 4. 恢复补缺件（微信/QQ 线程映射）
 
 ```
-python D:\hermes-backup\tools\apply_routing.py
+python ~/hermes-backup\tools\apply_routing.py
 ```
 - 把 `supplement\gateway_routing.json` 写回本机 `state.db` 的 `gateway_routing` 表（scope 自动改成本机路径）。
 - **前置**：主档会话必须先恢复（第 3 步用 `--all` 或至少 `--profile main` 跑过），否则 `<HERMES_HOME>\state.db` 还不存在，
@@ -83,13 +83,13 @@ python D:\hermes-backup\tools\apply_routing.py
 先启动收尾器（独立进程，不受对话进程影响）：
 
 ```
-pwsh -NoProfile -Command "(Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='pwsh -NoProfile -File \"D:\hermes-backup\tools\finish_restore.ps1\" -Repo \"D:\hermes-backup\"'}).ReturnValue"
+pwsh -NoProfile -Command "(Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='pwsh -NoProfile -File \"~/hermes-backup\tools\finish_restore.ps1\" -Repo \"~/hermes-backup\"'}).ReturnValue"
 ```
 
 然后对用户说：
 > 现在请**完全退出 Hermes**（托盘图标也要退出）。退出后收尾器会自动完成最后一步，并把 Hermes 重新拉起来（最多等 20 分钟）。如果稍后没有自动打开，手动双击桌面 Hermes 图标即可。
 
-收尾器动作：等待桌面端退出 → 覆盖 `desktop-overlay/` → `%APPDATA%\Hermes\`（群聊记录/置顶/bot 元数据/聊天附图）→ 重启网关 → 重新拉起桌面端。全程日志：`D:\hermes-backup\logs\finish-restore.log`；完成标记：`restore-out\FINISH-DONE.txt`。
+收尾器动作：等待桌面端退出 → 覆盖 `desktop-overlay/` → `%APPDATA%\Hermes\`（群聊记录/置顶/bot 元数据/聊天附图）→ 重启网关 → 重新拉起桌面端。全程日志：`~/hermes-backup\logs\finish-restore.log`；完成标记：`restore-out\FINISH-DONE.txt`。
 
 ## 6. 重启后验收清单（逐项核对，出对账）
 

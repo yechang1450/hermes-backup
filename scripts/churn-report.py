@@ -8,7 +8,7 @@
 ## 用法
     python churn-report.py                       # 镜像仓 HEAD~1..HEAD
     python churn-report.py --range HEAD~3 HEAD
-    python churn-report.py --repo D:/hermes-backup --top 10
+    python churn-report.py --repo ~/hermes-backup --top 10
     python churn-report.py --json                # 机器可读
 
 判据：`>5MB 文件` 里如果出现同一个会话的多个 `.part-`，说明该会话仍被整份重写。
@@ -22,7 +22,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-DEFAULT_REPO = "D:/hermes-backup"
+DEFAULT_REPO = str(Path.home() / "hermes-backup")
 
 
 def git(repo: str, *args: str) -> str:

@@ -4,7 +4,7 @@
 回答的问题：**镜像里装的是不是活库的全部内容**（不是"能不能恢复"，那是演练的事）。
 
 用法：
-    python scripts/audit-coverage.py --repo D:/hermes-backup --home %LOCALAPPDATA%/hermes
+    python scripts/audit-coverage.py --repo ~/hermes-backup --home %LOCALAPPDATA%/hermes
     python scripts/audit-coverage.py --repo ... --home ... --profile main --json out.json
 
 判据（退出码）：

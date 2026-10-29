@@ -7,13 +7,13 @@
 # 用法：
 #   bash scripts/rotate-generation.sh --from hermes-backup --to hermes-backup-2027q1
 #   bash scripts/rotate-generation.sh --from A --to B --dry-run        # 只看计划，不动任何东西
-#   可选：--mirror D:/hermes-backup  --owner <gh-user>  --skip-archive  --keep-mirror-branch
+#   可选：--mirror ~/hermes-backup  --owner <gh-user>  --skip-archive  --keep-mirror-branch
 #
 # 幂等/可续跑：新仓若已存在快照提交（远端 HEAD 与本轮生成的 tree 一致），会跳过推送直接继续。
 # 安全：全程持 sync 锁（sync.py 会主动让路）；工作树只允许 meta/、logs/ 的轮后改动。
 set -euo pipefail
 
-MIRROR="D:/hermes-backup"
+MIRROR="~/hermes-backup"
 OWNER=""
 FROM=""
 TO=""

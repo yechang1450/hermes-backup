@@ -7,12 +7,17 @@
 
 文档里的每个数字都必须能对回代码常量；对不上就是缺陷（读的人会照着做错事）。
 
+**先立一条通则：可增长的数量（几条坑 / 几套测试 / 几个场景 / 几个脚本）一律不写死在文档里。**
+写死就等于给自己排一张必然过期的卡——每加一条、每加一套，就要回来改 SKILL、改 references、改 README 三处，
+而漏改了也无人报错。要么写「以 `ls scripts/test-*.py | wc -l` 为准」，要么只说「跑通即看末行判据」。
+只有**代码常量**（分片阈值、超时秒数、体积闸）才是该写死的数——那也是因为能对回 `sync.py` 里的同一行。
+
 | 查什么 | 怎么查 | 判据 |
 |---|---|---|
 | 阶段预算/超时 | `grep -n "TIMEOUT\|timeout=" scripts/sync.py scripts/hb-autosync.py` | 与 `references/auto-sync.md`、SKILL.md 里写的秒数一致 |
 | 分片阈值 | `grep -n "PART_MAX" scripts/sync.py` | 文档里的 12MB 与常量一致；历史值只允许出现在「阈值演进」叙述里 |
 | 换代阈值 | `grep -n "12,000,000\|12GB" references/generations.md` | 全文只剩 12GB 一处现值，旧值仅在「为什么上调」段落 |
-| 场景数 | `grep -c '== S' scripts/test-hb-sentinel.py` | 文档写的块数 = 实测块数（当前 12：S1/S1b/S2–S9/S10，含 S5b 死锁用例） |
+| 场景数 / 套数 | `ls scripts/test-*.py | wc -l`、`grep -c '== S' scripts/test-hb-sentinel.py` | **文档不得写死数量**（只写「以 ls 为准」或末行判据）；若已写死，拿实测值去改掉它 |
 | 命令模板 | 逐条把文档里的命令在克隆里试跑（`--help` 级别） | 路径真实存在、参数被接受 |
 | 版本号 | `grep -rn "0\.4\." SKILL.md references/ | head` | 现值只在 frontmatter 与提交信息；其余只作历史叙述 |
 
@@ -23,7 +28,8 @@
 ```bash
 git clone --depth 1 <技能仓> <temp>/repo
 cd <temp>/repo && for f in scripts/*.py; do python "$f" --help; done   # 逐个看 rc 与用法
-python scripts/test-split.py; python scripts/test-layout.py; …          # 9 套，判据是各自末行「N 项，失败 0」
+python scripts/test-split.py; python scripts/test-layout.py; …          # 全部 test-*.py，判据是各自末行「N 项，失败 0」
+# 更省事：`python scripts/selfcheck.py` 一条命令跑完编译+全部测试+文档引用+公开面卫生
 bash -n scripts/*.sh
 ```
 
@@ -51,7 +57,7 @@ git check-ignore -v local.json                                    # 机器本地
 ```
 
 - 脚本/测试里**禁止**本机绝对路径：既泄露用户名，又让测试换机即败——按 `Path(__file__).resolve().parent` 拼。
-- 盘符示例（`D:/hermes-backup`）可以保留（是约定俗成的示例），但不得带真实用户名。
+- 盘符示例（`~/hermes-backup`）可以保留（是约定俗成的示例），但不得带真实用户名。
 
 ## 判读与修法
 
@@ -61,7 +67,7 @@ git check-ignore -v local.json                                    # 机器本地
 
 ## 收尾
 
-1. 8 套回归 + 一次全新克隆复跑；
+1. 全部回归（或 `selfcheck.py` 一条命令）+ 一次全新克隆复跑；
 2. 版本号**最后**改，frontmatter 与提交信息一致；
 3. 推后 `git ls-remote origin refs/heads/main` 与本地 HEAD 比对；
 4. 镜像侧手维护件（README 等）的改动留给下一轮同步提交，不要手推。

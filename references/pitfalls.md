@@ -1,16 +1,17 @@
 # Pitfalls — 实战坑清单（hermes-cloud-backup）
 
-> 由 `SKILL.md` 的 Pitfalls 段拆出（2026-10-26，68 条全文保留）。每条都是实机踩过并修复过的，
-> 带版本号与判据；排查时按主题找，别整篇通读。
+> 由 `SKILL.md` 的 Pitfalls 段拆出。每条都是实机踩过并修复过的，带版本号与判据；排查时按主题找，别整篇通读。
+> **条数随修随增——本文件不写死总数（也不要在 SKILL/README 里写死），只维护下面的分类目录。**
 
 ## 目录
 
-- [会话与分片](#会话与分片)（10 条）
-- [导出与采集](#导出与采集)（19 条）
-- [git 与推送](#git-与推送)（11 条）
-- [恢复与迁移](#恢复与迁移)（9 条）
-- [哨兵与自愈](#哨兵与自愈)（5 条）
-- [其它](#其它)（2 条）
+- [会话与分片](#会话与分片)
+- [导出与采集](#导出与采集)
+- [git 与推送](#git-与推送)
+- [恢复与迁移](#恢复与迁移)
+- [哨兵与自愈](#哨兵与自愈)
+- [运行环境与并发（Windows / 子代理 / 锁）](#运行环境与并发2026-10-26-增补)
+- [其它](#其它)
 
 ## 会话与分片
 
@@ -40,6 +41,13 @@
 
 - **跨档只读边界（备份/审计/演练通用）**：审计与演练必然读到**别的 profile** 的库与会话文件——**读可以，写不行**。发现「镜像有、活库没有」的会话（外部回滚/手工清理造成）时：把文件复制到 `temp/hcb-lost-sessions-<date>/src/<profile>/`、写一份含导入命令的 README、然后**只报告不导回**——那是别的会话的数据，导入/删除都要 owner 明确点头。同理：恢复演练一律落**空白 `--home`**（先用 `mkdir -p <B>/home/profiles` 建好目录；`--source` 收的是含 `<profile>/` 的父目录），跑完 `rm -rf`，绝不指向真实 home。
 
+- **改存储格式前先量「浪费占比」**（2026-10-26 实测）：外部调研建议做「header 独立 + 8MiB 消息组 + manifest」压 churn，
+  用真实一轮量（29 个变化分片、新版本合计 74,254,024 字节）后：8MiB 组只省 **11.3%**、只看末片 **0%**
+  （分片上限 12MB 与组大小 8MiB 只差 4MB，27/29 个分片根本封不了组）；理论上限（header 独立 + payload 对齐）55.3%，
+  组降到 1MiB 也只 45.2%——而早期消息被 merge/absorb 会让整段位移（某分片稳定前缀仅 10.5%、另一个 0%），任何分组都省不到。
+  **结论：不做**（2–3 人日 + 改格式 + 恢复链回归不划算）。方法可供以后复用：对同一段 `git diff` 的每个变化分片算
+  `LCP + LCS`（不重叠）÷ 新版本字节，按「末片/非末片」分组看。判据：**省不到 40% 就不动存储格式。**
+
 ## 导出与采集
 
 - **推送预算 900s→1500s、外层 3300s→3900s**（0.4.23）：一次性大重排那轮（900MB 级）推送超 900s 被掐，属合法大包不是故障；外层同步放宽到 3900s（collect+export+commit 最坏 ~1900s）。日常轮次仍只有几十 MB，读数不会变。
@@ -62,6 +70,13 @@
   某档导出失败/零产出时会把它**整档历史清掉**再 commit+push。现在签名是 `prune_stale(root, keep, allow_delete=…)`，
   只有「已确认活库里不存在的档」才允许整档删除，其余只清目录内多余文件；导出无产出时该档本轮受保护。回归＝`test-prune-protect.py`（S1–S3）。
 
+- **「导出成功但 0 个会话」是第二道闸，`allow_delete` 盖不住它**（1.0.7，2026-10-26 实案）：某轮批量导出对 main 抛
+  `MemoryError`，逐档 CLI 回退 `rc=0` 却 `sessions=0 files=0` ⇒ `split_to_session_parts` 得 0 个文件 ⇒ `keep` 为空 ⇒
+  `prune_stale` 把 `sessions/main` **1,470 个文件整目录删掉**，且整轮仍报 `exit 0` 并推送。现在两处闸：
+  ①`guard_zero_sessions()`——0 会话、而该档历史上已有文件 ⇒ 判失败、旧文件全部进 `keep`、本轮不 prune；
+  ②任一档失败 ⇒ 其它档照常提交推送，但本轮记 **`exit 5`**（进健康计数，连续 3 轮触发 needs-attention）。
+  回归＝`test-zero-session.py`（5 项，含「空档不误判」与「有产出不干预」）。**铁律：`rc=0` + 0 产出 ≠ 成功，先问「它本来有没有东西」。**
+
 - **快照回退不能回到 copy_file**（0.4.49）：`copy_file` 对 `.db` 分支进 `snapshot_sqlite`，而快照失败又回退 `copy_file` ⇒ 互递归
   （实测喂坏库递归到深层后返回 False、目标文件根本没写）。回退改为 `shutil.copy2 + os.replace`。回归＝`test-prune-protect.py` S4（0.03s、文件落地）。
 
@@ -75,6 +90,15 @@
 - **SQLite 必须用在线备份 API 快照，不能直接拷**（0.4.28）：看板库是 `journal_mode=wal`，而 `-wal`/`-shm` 被排除在备份外 ⇒ 只拷 `.db` 会丢掉尚未 checkpoint 的已提交事务；实测极端情况下**连建表语句都可能不在 `.db` 里**（普通拷贝打开即 `no such table`）。现在 `copy_file()` 对所有 `.db` 走 `snapshot_sqlite()`（`sqlite3.Connection.backup()`）：读穿 WAL、产出自包含紧凑快照，失败自动回退普通拷贝。覆盖 `kanban/*.db`、`shared-state.db`、`projects.db` 以及各档 `projects.db`。回归＝`test-kanban-snapshot.py`（3 项）。
 
 - **导出超时只杀直接子进程 → 孤儿导出会撞死下一轮**（0.4.15，2026-10-24 实案）：连续两轮 3300s 超时，原因是 `subprocess` 超时只杀直接子进程（`run_in_runtime` 启动器），真正的导出进程活下来占住 `profiles/<档>/state.db` 与镜像；下一轮再起一个，两个导出同时写同一批文件 → 双双卡死、RSS 涨到 1.6GB。现在三处收口：①导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()` 杀整树；②每轮启动后 `_reap_orphan_exporters()` 只回收「父进程已消失」的导出（识别条件：python 解释器 ＋ **真实参数**里以 `export_all_profiles.py` 结尾 ＋ 带 `--home`/`--out`；只看 argv 不看整条命令行文本，否则自己的 `-c` 探针只要代码里提到这些字眼就会自匹配）；③包装器 `hb-autosync` 超时也杀整树。回归＝`scripts/test-reap-exporters.py`（3 场景）。**判据：** 超时后先看 `ps` 里有没有 `export_all_profiles` 进程，再看下一轮是否同时存在两个导出。
+  **超时判据后来改成「按进展」**（1.0.4）：固定墙钟会把「慢但在干活」的导出当卡死掐掉（实测 1200s 硬预算把一轮从 1200s 拖成 48 分钟——回退逐档 CLI 更慢）。
+  现在每 30s 看一次**进程 IO**（`psutil` 取该进程树 read+write 字节增量），涨就重置 deadline，连续 1200s 不涨才 `_kill_tree`，硬上限 3600s。
+  **不能按输出目录判进展**：`export_all_profiles` 是整档在内存里渲染完才落盘，main 那种 1.6GB 的档在写文件前目录一直是空的。
+
+- **整档渲染会 MemoryError，必须分块**（1.0.7）：`render_sessions_export(全部会话)` 把整档拼成一个 str（main 约 1.6GB），机器一紧张就抛
+  `MemoryError`，而导出脚本是「逐档 try/except + 继续」，于是一个档静默缺席。改法＝按**同一份 `sessions` 列表**切块（`CHUNK=4`）逐块渲染并写入，
+  峰值只剩一个 chunk；实测输出与整档渲染 **sha256 逐字节相同**，main 1,548 会话/1.80GB 可正常导出。
+  **不要**改成「按 id 逐个 `export_session()` 再拼接」——`export_all()` 会对 `tool_names` 等字段做后处理（存哈希），
+  `export_session()` 存原始 JSON，两者 sha256 不同（实测首个差异就在 `tool_names`）。
 
 - **超大会话导出守卫**：`sessions export` 默认对 >20000 条消息的会话整包报错（且 rc=0 无产物）。官方解法 = `hermes config set sessions.max_export_messages 0`（新机上首次同步前设置一次即可）。
 
@@ -102,10 +126,21 @@
 
 - **换代必须分批推送（2GB 上限）**（0.4.33）：`scripts/seed_generation.sh` 用临时 index 逐批 `add -f → write-tree → commit-tree → push`（每批 ≤800MB），最后校验文件数与树；`rotate-generation.sh` 已改为调它。
   三个必踩坑：① `read-tree --empty` 不带 `GIT_INDEX_FILE` 会**清空镜像真实 index**；② `git ls-files -z | python - <<'PY'` 里 heredoc 会顶掉管道 stdin（分批恒为 0）；③ 临时 index 是空的，所有文件都"未跟踪"，仓库 `.gitignore` 会让 `add` 失败 ⇒ 必须 `-f`。
+  **1.0.3 又踩三个（全在真实环境才暴露）**：
+  ④ **不能按 `ls-files` 名单从工作树 `git add`**：桌面端 leveldb 一直在增删，枚举与 add 之间少一个文件就 `fatal: pathspec … did not match any files`、整批 rc=128。
+  ⑤ **`update-index --index-info` 会遵守 `.gitignore`**：会话分片是 `add -f` 进仓的，走 index-info 直接被 "Ignoring path …" 跳过 ⇒ 组装出的树是**空树** `4b825dc…`。
+  ⑥ **跑动中 HEAD 会前进**：同步轮并发提交后，结尾「种子文件数 vs HEAD 文件数」必然不等（16207 vs 16262）。
+  最终形态：整轮**钉住开始时的 `BASE=$(git rev-parse HEAD)`**（分批、组树、计数全读 `BASE`，不碰工作树）；每批 `read-tree "$BASE"` +
+  `update-index --force-remove -z --stdin` 反向删掉本批之外的路径；第 i 棵树＝前 i 批的**并集**（累积），末树必须等于 `BASE^{tree}`。
+  实测：5 批 / 16,262 文件 / `SEED-OK`，第二遍 7 秒 no-op（"远端已是完整树"）。
 
 - **私有性检查默认 fail-closed**（0.4.52，2026-10-26）：原实现遇到「属主解析不到 / gh 不可用 / 查询失败」一律**跳过检查照推**，
   而实测有 3 轮就是这样推上去的（日志 `!! 未解析到仓库属主，跳过私有检查`）。这个仓装着凭据与私人对话，检查没做成就不该推——
   现在改为**拒绝推送**，确需在无法验证的环境里推要显式加 `--allow-unverified-privacy`。
+  **失败日志必须带 rc 与可见输出**（1.0.9）：原来只拼 `stderr`，而 `gh` 网络失败时 stderr 是空的，日志就变成
+  「私有性查询失败： ——」，事后无法区分是网络、凭据还是仓库名错。现在写成 `私有性查询失败 rc=1：gh: Not Found (HTTP 404)`
+  （`stderr or stdout or "无输出"` 兜底）。一般规律：**任何 fail-closed 分支的日志都要带上能定性的最少信息**（rc + 可见输出），
+  否则下一次只能靠猜。真实演练：某轮因网络抖动查不到私有性 ⇒ exit 4 拒推，下一轮自动恢复——fail-closed 没误伤也没静默放行。
 
 - **远程 URL 解析要容忍端口**（0.4.52）：`ssh://git@ssh.github.com:443/owner/repo.git`（备用通道）原正则把 `:443` 当 owner 段、解析失败，
   于是属主为空 → 私有性检查被跳过。正则已加 `(?::\d+)?`；实测 5 种 URL 形态（ssh+端口/ssh/https/.git 有无）全部解析正确。
@@ -137,7 +172,7 @@
   `--help` 会被忽略并**真跑一轮同步**（实测子代理这么做触发过一次真实同步）；`verify_drill.py` 把 `--help` 当路径直接崩。三个都加了短路。
 
 - **模块级 `MIRROR` 也要走解析链**（0.4.47）：`import sync` 后直接调 `dump_routing()`/`sync_tools()` 而不经 `main()` 时，
-  旧默认值是 `~/hermes-backup` —— 实测把 supplement 写进了 `C:\Users\<user>\hermes-backup`。现在模块级默认值同样按 env → local.json → `D:/hermes-backup` → `~/hermes-backup` 解析。
+  旧默认值是 `~/hermes-backup` —— 实测把 supplement 写进了 `C:\Users\<user>\hermes-backup`。现在模块级默认值同样按 env → local.json → `~/hermes-backup` → `~/hermes-backup` 解析。
 
 - **哨兵有超期兜底**（0.4.27）：周期 cron 的 `next_run_at` 会被网关重启重排（实测把 05:57 挪到 06:29，空窗 2.5h）；哨兵现在除「网关重启 / 静默 5 分钟 / 长静默恢复」外，还有 **⑤ overdue**——镜像 `finished_at` 超过 2.5 小时、没在同步、也不满足 20 分钟新鲜闸，就补一轮。回归＝`test-hb-sentinel.py` S8/S9。
 
@@ -174,6 +209,13 @@
 - **后台轮的完成通知会滞后且成批到达**：通知里的命令输出可能对应**已被后续轮取代**的旧轮（失败也可能早被补推/修复）。处理前先对时——读 `state/hb-sync-runs.jsonl` 最后一行的轮次时间与 `state/hb-sync-health.json` 的 `updated_at`；旧通知若已被后继轮补齐，只记一笔、不重跑、不回滚已改配置。
 
 ## 运行环境与并发（2026-10-26 增补）
+
+- **Windows 上判进程活不能用 `kill -0` / `ps`**（1.0.3/1.0.4 实测）：MSYS 的 `kill -0 <pid>` 只看得到 MSYS 进程，
+  原生 Windows 进程一律报「不存在」——`rotate-generation.sh` 因此把**活锁当死锁**放行（差点在同步轮中途换代）。
+  一律用 `python -c "import psutil; psutil.pid_exists(pid)"`（或 `psutil.Process(pid).is_running()`）；`ps -W | grep 脚本名` 也永远匹配不到 python 子进程（只显示可执行名）。
+  另：同步锁文件内容是 **JSON**（`{"pid": N, "started": …}`），用 `tr -dc '0-9'` 抽 pid 会把时间戳拼进去，必须按字段解析。
+- **并发时给手工作业也挂锁**：手工跑 push/repack/换代这类会写镜像的活时，手写一份 `state/hermes-backup-sync.lock`（含自己的 pid），
+  让 cron 轮看到「已有同步在跑」而让路；完事再删。否则哨兵的轮次会和手工 push 抢同一个仓（ref 锁冲突 / 互相拖慢）。
 
 - **子代理会把 `HERMES_HOME`/`TEMP` 泄漏到共享 shell**：Hermes 终端是共享快照，子代理 `export` 的环境变量会留在里面。
   实测：某子代理把 `HERMES_HOME` 指到它的沙箱后，后续 `audit-coverage.py --profile X` 对着**假 home** 跑、报「跳过」并 rc=2；

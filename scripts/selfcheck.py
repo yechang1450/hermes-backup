@@ -3,8 +3,8 @@
 
 用法:
     python scripts/selfcheck.py                          # 默认（约 1 分钟）：编译 + 全部 test-*.py + 文档引用
-    python scripts/selfcheck.py --repo D:/hermes-backup  # 追加镜像分片体检（+几秒）
-    python scripts/selfcheck.py --repo D:/hermes-backup --audit   # 追加会话层覆盖率审计（2–5 分钟）
+    python scripts/selfcheck.py --repo ~/hermes-backup  # 追加镜像分片体检（+几秒）
+    python scripts/selfcheck.py --repo ~/hermes-backup --audit   # 追加会话层覆盖率审计（2–5 分钟）
     python scripts/selfcheck.py --json out.json
 
 退出码: 0 = 全绿；2 = 有失败（明细在正文）。

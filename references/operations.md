@@ -20,11 +20,11 @@ ls "$HERMES_HOME/state/hb-sync-needs-attention" 2>/dev/null && cat "$HERMES_HOME
 ## 每周（2 分钟）
 
 ```bash
-python scripts/selfcheck.py --repo D:/hermes-backup            # 12 项：编译+9 套测试+文档引用+公开面卫生+分片体检
-python scripts/selfcheck.py --repo D:/hermes-backup --audit    # 再加会话层覆盖率审计（2–5 分钟）
-python scripts/churn-report.py --repo D:/hermes-backup  # 这一轮实际重写多少（形状是否合理）
+python scripts/selfcheck.py --repo ~/hermes-backup            # 12 项：编译+9 套测试+文档引用+公开面卫生+分片体检
+python scripts/selfcheck.py --repo ~/hermes-backup --audit    # 再加会话层覆盖率审计（2–5 分钟）
+python scripts/churn-report.py --repo ~/hermes-backup  # 这一轮实际重写多少（形状是否合理）
 gh api repos/<owner>/<repo> --jq .size                  # 远端体积（判容量只认它）
-git -C D:/hermes-backup ls-tree -r -l main | awk '{s+=$4} END {printf "%.2fGB\n", s/1073741824}'   # 树实量
+git -C ~/hermes-backup ls-tree -r -l main | awk '{s+=$4} END {printf "%.2fGB\n", s/1073741824}'   # 树实量
 ```
 
 ## 什么时候该动手
@@ -42,8 +42,8 @@ git -C D:/hermes-backup ls-tree -r -l main | awk '{s+=$4} END {printf "%.2fGB\n"
 ## 定期动作
 
 - **换代**：`.size` ≥ 12GB（或克隆 >20 分钟）→ `rotate-generation.sh --from <旧> --to <新>`（先 `--dry-run`）。
-- **本地仓整理**：镜像 `.git` 已设 `gc.auto=0`；当 `git -C D:/hermes-backup count-objects -v` 的 `count` > 20,000 时，
-  在**没有同步在跑**的空窗跑 `git -C D:/hermes-backup gc --quiet`。
+- **本地仓整理**：镜像 `.git` 已设 `gc.auto=0`；当 `git -C ~/hermes-backup count-objects -v` 的 `count` > 20,000 时，
+  在**没有同步在跑**的空窗跑 `git -C ~/hermes-backup gc --quiet`。
 - **恢复演练**：每季度一次，按 `references/restore-drill.md` 走一遍（全新克隆 → 恢复一档 → 对账 0 差异）。
 
 ## 失败告警怎么接到人
@@ -62,7 +62,7 @@ git -C D:/hermes-backup ls-tree -r -l main | awk '{s+=$4} END {printf "%.2fGB\n"
 2. `state/hb-sync-child.log` 末 50 行 → 卡在哪个阶段（collect/export/git）
 3. `state/hb-sync-health.json` → `last_error` 原文
 4. `logs/last-run.log`（镜像内）→ 本轮完整日志
-5. 还有疑问 → `python scripts/selfcheck.py --repo D:/hermes-backup`
+5. 还有疑问 → `python scripts/selfcheck.py --repo ~/hermes-backup`
 
 ## 推送前（30 秒，三道）
 

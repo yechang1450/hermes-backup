@@ -27,7 +27,7 @@ def sample(path: Path) -> dict:
 def synthetic_sample() -> tuple[str, str]:
     """没有镜像时的自足样本：造一个"一行=一个会话"的 JSON，含易变统计字段与 2 万条消息。
 
-    2026-10-26 改：原来硬编码 D:/hermes-backup，换台机器就 IndexError、整套回归跑不了。
+    2026-10-26 改：原来硬编码 ~/hermes-backup，换台机器就 IndexError、整套回归跑不了。
     """
     msgs = [{"role": "user" if i % 2 else "assistant",
              "content": f"第 {i} 条消息，用于撑大样本，内容重复但 id 不同。",
@@ -44,7 +44,7 @@ def synthetic_sample() -> tuple[str, str]:
 
 def main() -> int:
     # 可用 HB_TEST_MIRROR 指向别处；拿不到真实样本就退回合成样本（保持自足）
-    src = Path(os.environ.get("HB_TEST_MIRROR") or r"D:/hermes-backup/sessions/main")
+    src = Path(os.environ.get("HB_TEST_MIRROR") or r"~/hermes-backup/sessions/main")
     cand = None
     raw = ""
     if src.is_dir():
@@ -64,7 +64,7 @@ def main() -> int:
         name = cand.name
     else:
         raw, name = synthetic_sample()
-        print("（未找到 D:/hermes-backup 镜像，使用合成样本——本测试自足，不依赖本机备份）")
+        print("（未找到 ~/hermes-backup 镜像，使用合成样本——本测试自足，不依赖本机备份）")
     obj = json.loads(raw)
     print(f"样本 {name}  {len(raw)/1048576:.2f}MB  顶层键 {len(obj)} 个")
 

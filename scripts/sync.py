@@ -12,7 +12,7 @@
     python sync.py --owner <gh-user> --create-remote   # 首次：创建私有仓并推送
 
 镜像目录解析顺序：--mirror > 环境变量 HERMES_BACKUP_MIRROR > 技能目录 local.json
-的 "mirror" 字段 > D:\\hermes-backup（若存在）> ~/hermes-backup。
+的 "mirror" 字段 > ~/hermes-backup（若存在）> ~/hermes-backup。
 仓库解析顺序：镜像的 git remote > --remote > gh 登录账号（默认仓名 hermes-backup）。
 
 存储格式（v3，2026-10-17）：
@@ -76,10 +76,10 @@ SKILL_DIR = HERMES_HOME / "skills" / "hermes-cloud-backup"
 SCRATCH = HERMES_HOME / "cache" / "scratch" / "hb-exports"
 
 # 下列由 main() 的 resolve_identity() 解析（--mirror / --owner / --remote 可覆盖）
-# 模块级默认值也走同一条解析链（env > local.json > D:/hermes-backup > ~/hermes-backup）。
+# 模块级默认值也走同一条解析链（env > local.json > ~/hermes-backup > ~/hermes-backup）。
 # 否则「import sync 后直接调 dump_routing()/sync_tools() 等」会落到 ~/hermes-backup ——
 # 2026-10-26 实测：手工调用把 supplement 写进了 C:\Users\<user>\hermes-backup。
-MIRROR = Path(os.environ.get("HERMES_BACKUP_MIRROR") or (Path("D:/hermes-backup") if Path("D:/hermes-backup").exists() else Path.home() / "hermes-backup"))
+MIRROR = Path(os.environ.get("HERMES_BACKUP_MIRROR") or ((Path.home() / "hermes-backup") if (Path.home() / "hermes-backup").exists() else Path.home() / "hermes-backup"))
 GH_OWNER = ""
 GH_REPO = "hermes-backup"
 REMOTE_URL = ""
@@ -113,7 +113,7 @@ def resolve_mirror(cli_value: str) -> Path:
     cfg = _skill_config().get("mirror")
     if cfg:
         return Path(cfg)
-    for cand in (Path("D:/hermes-backup"), Path.home() / "hermes-backup"):
+    for cand in ((Path.home() / "hermes-backup"), Path.home() / "hermes-backup"):
         if cand.exists():
             return cand
     return Path.home() / "hermes-backup"

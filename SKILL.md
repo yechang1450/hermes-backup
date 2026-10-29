@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 1.0.14
+version: 1.0.15
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -68,7 +68,7 @@ metadata:
 三条必踩的：
 
 - **`~` 不是 Python 的语法**：把 `D:/x` 批量替换成 `~/x` 会让 `Path("~/x")` 永远不存在（被当相对路径），必须改回 `Path.home() / "x"`；替换后逐个 `py_compile`，并在解释器里 `print(m.MIRROR, m.MIRROR.exists())` 验一次。
-- **单轮超时预算跟着磁盘档位走**：同一份数据、同一套代码，NVMe（顺序写 343MB/s）一轮 282–325s，换到 SATA（写 104MB/s）变 1605–2697s，3900s 兜底只剩 30% 余量。口径＝**最近 5 轮最大值 ×1.5**，换盘后重算，别沿用上一台机器的数。
+- **报「换盘后变慢」前先确认那一轮旁边有没有别的重活**：同一份数据、同一套代码，干净窗口实测 **485–496s**（旧址 282–325s，+75%）；而 1605–2697s 那两轮都撞着 3.4GB 的 `git reset --hard`、自检与克隆——**慢在争抢，不在磁盘**（同目录 3,000 个小文件写入：新盘 2,227 文件/秒 vs 旧盘 1,954，小文件反而更快；只有单文件顺序写才是 104 vs 343MB/s）。口径：测基线挑干净窗口；超时兜底按「干净轮最大值 ×2」留余量，**别拿被污染的样本改参数、也别把归因写进文档**。
 - **迁移脚本会留一批 `.bak-<日期>` 副本**：`~/.hermes` 下可能有上百个，会被镜像进备份仓（恢复时原样回到新机）；落进技能目录的那批还会经 `tools/` 发布到公开仓——发布前 `find <技能目录> -name '*.bak-*'` 清掉自己那份，别人的（`cron/`、`profiles/`）只报不动。
 
 迁移**是否真的完成**按 `references/host-migration.md` 的六路审计验，不要凭「目录都在」下结论。

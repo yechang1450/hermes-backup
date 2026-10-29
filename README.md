@@ -42,8 +42,8 @@ hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-cloud
 
 ```bash
 python scripts/selfcheck.py                          # 约 1 分钟：编译 + 9 套回归 + 文档引用 + 公开面卫生
-python scripts/selfcheck.py --repo D:/hermes-backup  # 追加镜像分片体检（PARTS-OK）
-python scripts/selfcheck.py --repo D:/hermes-backup --audit   # 追加会话层覆盖率审计（2–5 分钟）
+python scripts/selfcheck.py --repo ~/hermes-backup  # 追加镜像分片体检（PARTS-OK）
+python scripts/selfcheck.py --repo ~/hermes-backup --audit   # 追加会话层覆盖率审计（2–5 分钟）
 ```
 
 末行 `SELFCHECK-PASS` / `SELFCHECK-FAIL`，退出码 0 / 2。**只读**：不写镜像、不碰活库、不联网。
@@ -55,7 +55,7 @@ python scripts/selfcheck.py --repo D:/hermes-backup --audit   # 追加会话层�
 
 把备份仓地址交给新机上的 Hermes Agent（或人）：
 
-> 从我的 GitHub 私有仓库 `<用户名>/hermes-backup` 克隆到 D:\hermes-backup，读 RESTORE.md 按步骤恢复。
+> 从我的 GitHub 私有仓库 `<用户名>/hermes-backup` 克隆到 ~/hermes-backup，读 RESTORE.md 按步骤恢复。
 
 全程只有一步需要人工：中途完全退出一次桌面端（收尾器自动完成替换并重新拉起）。
 

@@ -13,7 +13,7 @@ metadata:
 
 # hermes-cloud-backup — Hermes 数据云备份 / 恢复
 
-> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/main:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。⑧**公开仓零本机痕迹**：脚本/测试里不得出现 `C:/Users/<名>` 这类绝对路径（既泄露用户名，又让测试换机即败）——一律按 `Path(__file__).resolve().parent` 拼；发布前用 `grep -rn "C:/Users/" scripts/` 扫一遍。⑨**文档里不写死可增长的数量**（几条坑 / 几套测试 / 几个场景 / 几个脚本）：每加一条就要回来改 SKILL、references、README 三处，漏改了也没人报错（实见同一份文档里「62 条」「8 套」「10 个场景」「9 套」四处同时过期）。要么写「以 `ls scripts/test-*.py | wc -l` 为准」，要么只给末行判据；能写死的只有能对回 `sync.py` 同一行的**代码常量**（分片阈值 / 超时 / 体积闸）。
+> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/main:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。⑧**公开仓零本机痕迹**：脚本/测试里不得出现 `C:/Users/<名>` 这类绝对路径（既泄露用户名，又让测试换机即败）——一律按 `Path(__file__).resolve().parent` 拼；发布前用 `grep -rn "C:/Users/" scripts/` 扫一遍。⑨**文档里不写死可增长的数量**（几条坑 / 几套测试 / 几个场景 / 几个脚本）：每加一条就要回来改 SKILL、references、README 三处，漏改了也没人报错（实见同一份文档里「62 条」「8 套」「10 个场景」「9 套」四处同时过期）。要么写「以 `ls scripts/test-*.py | wc -l` 为准」，要么只给末行判据；能写死的只有能对回 `sync.py` 同一行的**代码常量**（分片阈值 / 超时 / 体积闸）。⑩**别把技能目录整份拷进暂存仓**——owner 与并行 agent 会直接改仓里的文件（实测：README 里新加的许可与权利声明被整份覆盖时静默回滚，还把他早删掉的 `LICENSE` 带了回去）；推前按 `git status` 只复制**你实际改过的那几个文件**，提交前 `git diff` 扫一眼有没有删掉别人的段落。
 
 把本机 Hermes 的全部状态（配置/凭据/记忆/技能/会话/桌面端数据）**线性同步**到一个
 **私有 GitHub 仓**（默认 `hermes-backup`，唯一权威版本在 GitHub），并支持在任何新机上
@@ -53,6 +53,25 @@ metadata:
 > **两个 `tools/` 别搞混**：`<REPO>/tools/` 只在**备份仓 clone 目录**里（每轮同步时由本技能 `scripts/` 复制过去，`~/hermes-backup/tools/` 就是它）；**技能仓本身只有 `scripts/`，没有 `tools/`**。所以恢复类命令要在备份仓目录下跑，同步/审计/换代类命令用 `<SKILL>/scripts/`。
 
 > 机器本地配置（镜像目录、同步默认仓名）放技能目录 `local.json` 的 `mirror` / `repo` 两项（不进任何仓库）；镜像目录默认自动探测，`--mirror` 可指定；镜像已有 origin 时仓名以 origin 为准（换代脚本会同时改写 origin 与 `local.json`，代码里不写死代名）。
+
+## 主机路径迁移（换盘 / 换目录 / 换用户名）
+
+宿主把工作区或镜像换根之后，**地址不会自动跟上**：代码默认值、`local.json`、cron 的 workdir、运行目录壳、文档示例、记忆各存一份。按顺序改完再点火：
+
+1. `local.json` 的 `mirror` 写**真路径**——这是唯一该出现用户名的地方，它不进任何仓库。
+2. 代码默认值用 `Path.home() / "hermes-backup"`，**绝不写死 `C:/Users/<名>`**：写死了既泄用户名，又让公开仓的隐私扫描（`privacy-scan.py` 第三道）必红。
+3. 文档与示例一律 `~/hermes-backup`、`~/workspace`（Windows 即 `C:\Users\<你>\…`）。
+4. 新镜像若是「从旧盘拷过来的中间态」，先 `git fetch` 并对齐远端（`git reset --hard origin/main`），**别在落后的工作树上直接跑轮**。
+5. **点火一轮真同步验收**：日志头 `解析：mirror=<新路径>`、末行 `committed=True pushed=True`、`git ls-remote` 与本地 `HEAD` 一致。
+6. 记忆里写**一条全局映射**（旧路径 → 新路径）就够，比逐条改上百处便宜且不会漏。
+
+三条必踩的：
+
+- **`~` 不是 Python 的语法**：把 `D:/x` 批量替换成 `~/x` 会让 `Path("~/x")` 永远不存在（被当相对路径），必须改回 `Path.home() / "x"`；替换后逐个 `py_compile`，并在解释器里 `print(m.MIRROR, m.MIRROR.exists())` 验一次。
+- **单轮超时预算跟着磁盘档位走**：同一份数据、同一套代码，NVMe（顺序写 343MB/s）一轮 282–325s，换到 SATA（写 104MB/s）变 1605–2697s，3900s 兜底只剩 30% 余量。口径＝**最近 5 轮最大值 ×1.5**，换盘后重算，别沿用上一台机器的数。
+- **迁移脚本会留一批 `.bak-<日期>` 副本**：`~/.hermes` 下可能有上百个，会被镜像进备份仓（恢复时原样回到新机）；落进技能目录的那批还会经 `tools/` 发布到公开仓——发布前 `find <技能目录> -name '*.bak-*'` 清掉自己那份，别人的（`cron/`、`profiles/`）只报不动。
+
+迁移**是否真的完成**按 `references/host-migration.md` 的六路审计验，不要凭「目录都在」下结论。
 
 ## 文件构成
 
@@ -95,6 +114,7 @@ metadata:
 - `references/auto-sync.md` — 自动同步（watchdog 四机制）判定、静默信号源与实施顺序
 - `references/restore-drill.md` — 恢复侧验收演练配方（两遍独立演练标准、逐会话对账口径、判读坑）
 - `references/audit-playbook.md` — **自查手册**：四路审计（文档↔代码漂移 / 全新克隆下逐个脚本可跑性 / 代码级静默失败审查 / 公开面卫生）+ 误报判读与收尾
+- `references/host-migration.md` — **主机换盘/换目录后的六路审计**（数据完整性 / 引用完整性 / 跨盘残留 / 运行配置 / 旧副本停写 / 恢复演练）＋轻探针命令＋「哪些差异是正常淘汰」判读表
 
 ## 流程 A：日常同步（源机）
 

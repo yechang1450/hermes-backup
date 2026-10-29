@@ -69,6 +69,24 @@ python "$HB/tools/run_in_runtime.py" "$HB/tools/restore_files.py" --repo "$HB" -
 - 被覆盖的旧文件自动备份到 `restore-out\pre-restore-backup\`（要回滚从这里拿）。
 - 完成标准：输出「覆盖 N 文件」且无报错；`HERMES_HOME\memories\MEMORY.md`、`config.yaml`、`.env` 已就位（重启后生效）。
 
+## 2b. 若新机用户名与旧机不同（强烈建议做）
+
+备份里的 `config.yaml`（hook 路径）、`cron/jobs.json`（workdir）、各 bot 档 config 与 `scripts/` 里的脚本
+都写死了旧机器的用户目录。新机用户名不同（甚至只是换了盘符）时，这些引用会**静默失效**——
+hook 不加载、cron 找不到脚本。先查再改：
+
+```bash
+python "$HB/tools/run_in_runtime.py" "$HB/tools/check-paths.py" --home "$LOCALAPPDATA/hermes"
+#   rc=0 → 全部等于本机当前用户目录，不用管
+#   rc=2 → 列出非本机的旧前缀（如 C:\Users\旧名），需要改写
+
+# 真改写（先备份 .bak-paths-<时间>，只动白名单文本件，不碰 .db/日志/会话）：
+python "$HB/tools/run_in_runtime.py" "$HB/tools/check-paths.py" --home "$LOCALAPPDATA/hermes" --fix --dry-run
+python "$HB/tools/run_in_runtime.py" "$HB/tools/check-paths.py" --home "$LOCALAPPDATA/hermes" --fix
+```
+- 用户名相同就可以跳过本节（跑一次只读检查确认 rc=0 即可）。
+- 改完要**重启 Hermes** 才生效（配置在进程启动时读取）。
+
 ## 3. 恢复会话层（全部历史对话）
 
 ```bash

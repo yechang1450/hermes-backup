@@ -91,7 +91,7 @@ TOOL_FILES = ["sync.py", "session_layout.py", "concat_sessions.py", "apply_routi
               "finish_restore.ps1", "export_all_profiles.py",
               # 只读自检件也镜像进去：新机恢复后可直接 `python tools/check-parts.py` 验分片形态
               "check-parts.py", "verify_drill.py", "selfcheck.py", "privacy-scan.py",
-              "start-finish-restore.ps1"]
+              "start-finish-restore.ps1", "check-paths.py"]
 
 
 def _skill_config() -> dict:

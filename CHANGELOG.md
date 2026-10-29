@@ -1,3 +1,18 @@
+## 1.0.16 — 2026-10-29 · 新机实战前的恢复手册重写
+
+明天要在新机器上实战恢复，把 `templates/RESTORE.md` 按「照着敲就能跑」重写：
+
+- **路径写法**：全篇改成正斜杠 + `export HB="$HOME/hermes-backup"` 变量。原文写成
+  `~/hermes-backup\tools\restore_files.py`，bash 会吃掉反斜杠拼成 `~/hermes-backuptoolsrestore_files.py`，
+  照抄必报"找不到文件"。
+- **参数补齐**：会话层补 `--repo "$HB" --home "$LOCALAPPDATA/hermes"`；补缺件同样补 `--repo`；
+  明确 `--create` 只有 `restore_files.py` 有（`restore_sessions.py` 传它会 rc=2）。
+- **稀疏检出列表**去掉 `templates`（数据仓根本没有该目录，根目录只有 `RESTORE.md`）。
+- **第 5 步改为壳脚本** `tools/start-finish-restore.ps1`：原来内联拼 `Invoke-CimMethod ... CommandLine`
+  经 bash→pwsh 三层转义必然 ParserError（实测），壳里已把拼接做掉，退出码 0=已拉起 / 2=找不到收尾器。
+- **验收节**补两条实测坑：非 main 档的库在 `profiles/<档>/state.db`；镜像文件数 ≥ 会话数（巨会话分片）。
+- `TOOL_FILES` 增加 `start-finish-restore.ps1`，保证数据仓里有它（否则新机克隆后第 5 步无脚本可用）。
+
 ## 1.0.15 — 2026-10-29
 
 - 文档与仓库同步：README 里的 `D:/hermes-backup` 全部改成 `~/hermes-backup`（保留 owner 的许可与权利声明）；

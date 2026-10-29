@@ -1,7 +1,7 @@
 ---
 name: hermes-cloud-backup
 description: Back up/restore Hermes state via a private GitHub repo.
-version: 1.0.15
+version: 1.0.16
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -70,6 +70,15 @@ metadata:
 - **`~` 不是 Python 的语法**：把 `D:/x` 批量替换成 `~/x` 会让 `Path("~/x")` 永远不存在（被当相对路径），必须改回 `Path.home() / "x"`；替换后逐个 `py_compile`，并在解释器里 `print(m.MIRROR, m.MIRROR.exists())` 验一次。
 - **报「换盘后变慢」前先确认那一轮旁边有没有别的重活**：同一份数据、同一套代码，干净窗口实测 **485–496s**（旧址 282–325s，+75%）；而 1605–2697s 那两轮都撞着 3.4GB 的 `git reset --hard`、自检与克隆——**慢在争抢，不在磁盘**（同目录 3,000 个小文件写入：新盘 2,227 文件/秒 vs 旧盘 1,954，小文件反而更快；只有单文件顺序写才是 104 vs 343MB/s）。口径：测基线挑干净窗口；超时兜底按「干净轮最大值 ×2」留余量，**别拿被污染的样本改参数、也别把归因写进文档**。
 - **迁移脚本会留一批 `.bak-<日期>` 副本**：`~/.hermes` 下可能有上百个，会被镜像进备份仓（恢复时原样回到新机）；落进技能目录的那批还会经 `tools/` 发布到公开仓——发布前 `find <技能目录> -name '*.bak-*'` 清掉自己那份，别人的（`cron/`、`profiles/`）只报不动。
+- **镜像树是 `sync.py` 每轮的产物，不是源——批量改路径时必须把它排除在外。**
+  `home-overlay/` / `profiles-overlay/` / `sessions/` / `desktop-overlay/` 每轮由采集整份覆盖，手改只会制造
+  「源与镜像不一致」，下一轮被覆盖回去（期间还可能被当成真实差异提交进历史）。**尤其别在镜像里做字节级
+  字符串替换**：它还躺着 SQLite（`kanban/boards/*/kanban.db`、`cron/*.db`），按字节替换会改坏二进制页。
+  实测一次迁移里误改镜像 140 个文件，其中一块板库命中 4,064 处；靠 `.bak-<日期>` 全量还原（448 个）
+  ＋逐库 `PRAGMA quick_check`（12 个库全 `ok`）才确认没搞坏。判据一句话：**这个目录会不会被某个进程
+  整份重新生成？会 ⇒ 只读，想让它变就重跑一轮 sync。** 例外是镜像根 `README` 这类「不被 sync 生成」的文件
+  （见维护笔记④）。
+  同理：用户自己粘贴/上传的原始输入存档（`attachments/`、`composer-pastes/`）是取证材料，不是配置。
 
 迁移**是否真的完成**按 `references/host-migration.md` 的六路审计验，不要凭「目录都在」下结论。
 

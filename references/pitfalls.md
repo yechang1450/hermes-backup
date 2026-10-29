@@ -234,3 +234,8 @@
   而撞上 `git reset --hard`（3.4GB）与自检/克隆的那两轮是 **1605s / 2697s**。第一反应容易归因成"新磁盘慢"——
   实测 3,000 个小文件写入 C: **2,227/s**、D: 1,954/s，小文件并不慢，慢在并发争抢。
   口径：**报"变慢"前先确认那一轮旁边有没有别的重活**；要测基线就挑干净窗口，别拿被污染的样本下结论。
+- **核恢复结果要看对库**（2026-10-29 演练）：`restore_sessions.py --home X --profile p` 把**非 main 档**写进
+  `X/profiles/<p>/state.db`，`X/state.db` 只是个空壳（没有 sessions 表）；直接去开 `X/state.db` 会报
+  `no such table: sessions`，误判成"恢复失败"。正确核法：`X/profiles/<p>/state.db` 数 sessions/messages、
+  查 `message_uid` 空值、`pragma quick_check`。另两条老坑在演练里又踩了一次：`--create` 只有 `restore_files.py` 有，
+  `restore_sessions.py` 传它会 rc=2；直跑 `python restore_*.py` 缺 `ruamel`，必须经 `run_in_runtime.py`（且给**绝对路径**）。

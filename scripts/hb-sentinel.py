@@ -40,12 +40,42 @@ LONG_QUIET_SECONDS = 3600    # ④ 长静默阈值：1 小时
 OVERDUE_SECONDS = 150 * 60   # ⑤ 超期兜底：>2.5 小时没有成功轮 ⇒ 补一轮（周期 cron 漂移/漏跑时）
 MIN_SYNC_GAP = 20 * 60       # 距上次实际同步 ≥20 分钟才允许再触发
 SYNC_TIMEOUT = 5400    # 与 hb-autosync 一致；外层兜底（导出按进展判、硬上限 3600s + push 1500s 不能简单相加）
+GUARD_EXIT = 6               # sync.py 的 shrink guard：活库比备份少太多 ⇒ 拒绝同步（新机/未恢复）
+GUARD_MARKER = HOME / "state" / "hb-sync-guard-blocked.json"
+GUARD_QUIET_S = 24 * 3600    # 被拦下后静默一天：这是配置问题，重试无意义，但不能永远不提
 
 NOTES: list[str] = []
 
 
 def note(msg: str) -> None:
     NOTES.append("[hb-sentinel %s] %s" % (datetime.now().strftime("%H:%M:%S"), msg))
+
+
+def guard_marker_age() -> float | None:
+    """上次被 shrink guard 拦下距今多少秒（无标记/读不到 ⇒ None）。"""
+    try:
+        d = json.loads(GUARD_MARKER.read_text(encoding="utf-8"))
+        return max(0.0, time.time() - float(d["ts"]))
+    except Exception:
+        return None
+
+
+def mark_guard_blocked(reason: str) -> None:
+    try:
+        GUARD_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        GUARD_MARKER.write_text(json.dumps(
+            {"ts": time.time(),
+             "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+             "reason": reason[:500]}, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def clear_guard_marker() -> None:
+    try:
+        GUARD_MARKER.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def mirror_meta() -> Path:
@@ -232,7 +262,8 @@ def child_log_tail(n: int = 4000) -> str:
         return ""
 
 
-def run_sync(tag: str) -> bool:
+def run_sync(tag: str) -> str:
+    """返回 "ok" / "fail" / "guard"（guard=shrink guard 主动拒绝，不是故障）。"""
     note("触发同步：%s" % tag)
     CHILD_LOG.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -252,17 +283,26 @@ def run_sync(tag: str) -> bool:
     except subprocess.TimeoutExpired:
         bump_unfinished(started, "timeout %ss" % SYNC_TIMEOUT)
         note("!! 同步超时（%ss）——阶段日志尾：\n%s" % (SYNC_TIMEOUT, child_log_tail(1200)))
-        return False
+        return "fail"
     except Exception as e:
         bump_unfinished(started, repr(e))
         note("!! 同步异常：%r" % e)
-        return False
+        return "fail"
     tail = child_log_tail()
     if p.returncode == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
         note("同步完成 ok")
-        return True
+        clear_guard_marker()
+        return "ok"
+    if p.returncode == GUARD_EXIT:
+        why = next((ln.strip() for ln in reversed(tail.splitlines())
+                    if "活库" in ln or "shrink guard" in ln), "")
+        mark_guard_blocked(why or tail[-500:])
+        note("shrink guard 拦下本轮（备份比本机完整得多，拒绝清空备份）：%s\n"
+             "   → 先按 RESTORE.md 恢复，或确认要覆盖后加 --allow-shrink；"
+             "本提示 %d 小时内不再重复。" % (why or "（原因见子进程日志）", GUARD_QUIET_S // 3600))
+        return "guard"
     note("!! 同步失败 rc=%s\n%s" % (p.returncode, tail[-800:]))
-    return False
+    return "fail"
 
 
 def main() -> int:
@@ -285,6 +325,10 @@ def main() -> int:
               "| fresh(20m):", age is not None and age < MIN_SYNC_GAP,
               "| sync_running:", lock_is_live())
         return 0
+
+    ga = guard_marker_age()
+    if ga is not None and ga < GUARD_QUIET_S:
+        return 0        # 上一轮被 shrink guard 拦下：静默期不重试（否则每 20 分钟撞一次同一堵墙）
 
     st = load_state()
     now = time.time()
@@ -332,8 +376,10 @@ def main() -> int:
                 trigger = "overdue-no-state"
 
     ok = True
+    outcome = "ok"
     if trigger:
-        ok = run_sync(trigger)
+        outcome = run_sync(trigger)
+        ok = outcome == "ok"
         st["last_trigger_ts"] = now
         st["last_trigger_tag"] = trigger
         st["last_trigger_ok"] = ok
@@ -344,6 +390,10 @@ def main() -> int:
     st["last_msg_age_s"] = int(now - newest) if newest else None
     save_state(st)
 
+    if outcome == "guard":
+        for line in NOTES:
+            print(line, flush=True)
+        return 0        # 主动拒绝不算失败：不写失败计数、不让 cron 记红
     if trigger and not ok:
         for line in NOTES:
             print(line, flush=True)

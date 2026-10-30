@@ -20,6 +20,9 @@ SYNC_SCRIPT = HOME / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
 MIN_SYNC_GAP = 20 * 60
 SYNC_TIMEOUT = 5400   # 外层兜底：collect+export+commit 最坏 ~1900s，推送预算 1500s
 CHILD_LOG = HOME / "state" / "hb-sync-child.log"
+GUARD_EXIT = 6               # sync.py 的 shrink guard：活库比备份少太多 ⇒ 拒绝同步（新机/未恢复）
+GUARD_MARKER = HOME / "state" / "hb-sync-guard-blocked.json"
+GUARD_QUIET_S = 24 * 3600    # 拦下后静默一天（配置问题，重试无意义）
 
 
 def _kill_tree(pid: int) -> int:
@@ -139,6 +142,32 @@ def bump_unfinished(start_ts: float, reason: str) -> int:
     return n
 
 
+def guard_marker_age() -> float | None:
+    try:
+        d = json.loads(GUARD_MARKER.read_text(encoding="utf-8"))
+        return max(0.0, time.time() - float(d["ts"]))
+    except Exception:
+        return None
+
+
+def mark_guard_blocked(reason: str) -> None:
+    try:
+        GUARD_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        GUARD_MARKER.write_text(json.dumps(
+            {"ts": time.time(),
+             "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+             "reason": reason[:500]}, ensure_ascii=False) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def clear_guard_marker() -> None:
+    try:
+        GUARD_MARKER.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def mirror_meta() -> Path:
     base = os.environ.get("HERMES_BACKUP_MIRROR")
     cands = [Path(base)] if base else [(Path.home() / "hermes-backup"), Path.home() / "hermes-backup"]
@@ -164,6 +193,9 @@ def main() -> int:
         print("用法: python hb-autosync.py\n"
               "  周期同步入口：调用 sync.py 跑一轮，超时杀整树并写健康账本。无参数。")
         return 0
+    ga = guard_marker_age()
+    if ga is not None and ga < GUARD_QUIET_S:
+        return 0        # 上一轮被 shrink guard 拦下：静默期内不重试
     meta = mirror_meta()
     try:
         m = json.loads(meta.read_text(encoding="utf-8"))
@@ -188,6 +220,16 @@ def main() -> int:
         return 1
     tail = child_log_tail()
     if rc == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
+        clear_guard_marker()
+        return 0
+    if rc == GUARD_EXIT:
+        why = next((ln.strip() for ln in reversed(tail.splitlines())
+                    if "活库" in ln or "shrink guard" in ln), "")
+        mark_guard_blocked(why or tail[-500:])
+        print("[hb-autosync] shrink guard 拦下本轮（备份比本机完整得多，拒绝清空备份）：%s\n"
+              "   → 先按 RESTORE.md 恢复，或确认要覆盖后手工 `sync.py --allow-shrink`；"
+              "本提示 %d 小时内不再重复。" % (why or "（原因见子进程日志）", GUARD_QUIET_S // 3600),
+              flush=True)
         return 0
     # 子进程非零退出（被杀/崩）时 sync.py 可能没机会记账 ⇒ 补一次，避免"这轮没发生"
     bump_unfinished(started, "child rc=%s" % rc)

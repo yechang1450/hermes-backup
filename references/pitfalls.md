@@ -161,6 +161,21 @@
 
 ## 恢复与迁移
 
+- **新机装好后先恢复、再同步——否则一轮同步就能把备份清空**（1.0.20，2026-10-31 实案）：
+  新装 Hermes 的活库只有 87 个会话，哨兵按 `overdue` 自动跑了一轮，采集阶段把镜像里
+  **2,311 个会话文件、8,284 个 profile 文件、1,569 个 home 文件**当「残留」删掉（工作树被清空、未提交）；
+  只因 `gh` 不可用拒绝推送，备份才没被覆盖。原有的零会话闸只看「0 个」，拦不住「有一点但极少」。
+  现在 `sync.py` 在采集**之前**跑 `shrink_guard()`：活库会话数 < 备份的 50%（且备份 ≥20 个会话）⇒
+  **拒绝本轮、镜像一个字节都不动**，`exit 6`，`report.aborted=shrink_guard`。
+  计数口径有两个坑：①镜像按**会话 id** 计（多分片只算一次），②基线取「工作树」与 `git ls-tree HEAD` 的
+  **较大值**——工作树一旦被误 prune 过，只看磁盘就会把「已经少了」当基线，闸门永远不响。
+  确要用本机现状覆盖备份 ⇒ `--allow-shrink`；想两代都留 ⇒ `references/generations.md` 换代。
+  两个 cron 包装器（`hb-sentinel.py` / `hb-autosync.py`）把 `exit 6` 当**主动拒绝**而非故障：
+  提示一次、写 `state/hb-sync-guard-blocked.json`、24 小时内不再重试（`rc=0`，不记失败计数）；
+  `sync._record_health()` 同样**不把 exit 6 计入连续失败**（既不增也不清零）——它是「本机还没恢复」的
+  配置状态，不是机制故障，计进失败会让 needs-attention 被噪声触发。闸门位置在建目录之前：
+  连 `meta/sync-state.json` 都不写，否则哨兵会以为刚同步过（`finished_at` 新鲜 20 分钟）而掩盖真信号。
+
 - **恢复要带 `--verify`**（0.4.22）：`restore_sessions.py --fast-import --verify` 会在导入后**逐会话**把「镜像里的消息条数」与「恢复库里的行数」对齐，不一致就打印明细并让退出码=3。以前演练靠人肉比对（我手动抽 7 个会话），现在一条命令出结论；实测 mentoragent 11/638 「不一致 0 个」。
 
 - **跑会 import `hermes_state` 的脚本必须经 `<REPO>/tools/run_in_runtime.py`**（备份仓内副本；技能仓只有 `scripts/`）：在本机终端里 `python <脚本>.py` 会被启动器以**另一个解释器**（缺 ruamel 等运行期依赖）经 runpy 重跑，报 `ModuleNotFoundError: No module named 'ruamel'`；就是 `python -c "import <模块>"` 也不能豁免（`SessionDB(...)` 构造会把进程切到工具树 python）。正确形态一律是 `python <REPO>/tools/run_in_runtime.py <脚本> [参数]`——恢复、对账、A/B 测试脚本皆同。同理：**恢复/对账不要与 `hermes update` 并发**，更新收尾持有 checkout 锁，卡住的子进程会 0% CPU 空转（判据：RSS 几 MB、CPU 0、日志停在启动横幅）。

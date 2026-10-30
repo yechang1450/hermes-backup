@@ -60,8 +60,12 @@ def _alive(pid: int) -> bool:
         return False
 
 
-def _wait_find(pred, timeout: float = 6.0):
-    """轮询等进程可见：固定 sleep(1) 在负载高时会假红（实测 8 次里 1 次 find=[]）。"""
+def _wait_find(pred, timeout: float = 20.0):
+    """轮询等进程可见：固定 sleep(1) 在负载高时会假红（实测 8 次里 1 次 find=[]）。
+
+    超时按「冷启动 python 的时间」留：本机满载时 `python -c` 启动可到 2–5s，
+    6s 预算在整轮 selfcheck 里曾假红过一次（2026-10-31），故放宽到 20s。
+    """
     end = time.time() + timeout
     while time.time() < end:
         got = _find(pred)
@@ -89,8 +93,8 @@ def main() -> int:
             break
         time.sleep(1.0)
     killed = sync._reap_orphan_exporters()
-    # 刚 kill 的进程可能还没落气：给最多 5 秒
-    deadline = time.time() + 5
+    # 刚 kill 的进程可能还没落气：给最多 20 秒（满载时句柄释放会拖）
+    deadline = time.time() + 20
     while time.time() < deadline and any(_alive(pid) for pid in orphans):
         time.sleep(0.2)
     ok1 = bool(orphans) and all(not _alive(pid) for pid in orphans)

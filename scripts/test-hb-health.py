@@ -90,6 +90,21 @@ def main() -> int:
     n = mod.bump_unfinished(time.time() - 60, "exited before recording")
     check("第 3 次写标记", n == 3 and MARKER.exists(), str(n))
 
+    print("== C. shrink guard（exit 6）不算失败：计数不增不减、不写标记 ==")
+    h3 = {"consecutive_failures": 2, "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+          "last_exit_code": 3, "last_error": "x"}
+    HEALTH.write_text(json.dumps(h3), encoding="utf-8")
+    if MARKER.exists():
+        MARKER.unlink()
+    sync._record_health(6, {"start_ts": "z", "end_ts": "2026-10-31T02:09:08", "duration_s": 0})
+    h4 = json.loads(HEALTH.read_text(encoding="utf-8"))
+    check("计数不增不减（仍 2）", h4.get("consecutive_failures") == 2, str(h4.get("consecutive_failures")))
+    check("记下了 exit 6", h4.get("last_exit_code") == 6, str(h4.get("last_exit_code")))
+    check("不写 needs-attention", not MARKER.exists())
+    sync._record_health(6, {"start_ts": "z2", "end_ts": "2026-10-31T02:29:08", "duration_s": 0})
+    h5 = json.loads(HEALTH.read_text(encoding="utf-8"))
+    check("连续两次 exit 6 也不涨", h5.get("consecutive_failures") == 2, str(h5.get("consecutive_failures")))
+
     print()
     print("== 总判定：%s ==" % ("PASS" if ok_all else "FAIL"))
     return 0 if ok_all else 1

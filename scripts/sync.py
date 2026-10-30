@@ -777,6 +777,106 @@ def prune_stale(sessions_root: Path, keep: dict[str, set[str]],
         log(f"sessions 清理：移除 {removed} 个过期文件/目录")
 
 
+# ---------- 新机/未恢复保护（shrink guard） ----------
+# 2026-10-31 实案：新机装好 Hermes（活库 ~90 个会话）后哨兵按 overdue 自动跑了一轮，
+# home-overlay 清掉 1,569 个、profiles 8,284 个、sessions 2,311 个文件——只有
+# 「gh 不可用拒绝推送」挡住了它。备份一旦这样提交，HEAD 就只剩新机的几十个会话；
+# guard_zero_sessions 拦不住「数量少但非零」的情形，所以要在采集**之前**先拦。
+GUARD_EXIT = 6                  # shrink guard 拒绝的专用退出码（包装器/健康账本都认它）
+SHRINK_GUARD_MIN_BASE = 20      # 备份里至少这么多会话才启用（小档不拦，避免误伤）
+SHRINK_GUARD_RATIO = 0.5        # 活库会话数 < 备份 × 该比例 ⇒ 判「疑似新机/未恢复」
+
+
+def _session_key(fname: str) -> str:
+    """会话文件名 → 会话 id（多分片只算一次）。"""
+    key = fname.split(".part-")[0]
+    if key.endswith(".jsonl.gz"):
+        return key[:-9]
+    if key.endswith(".jsonl"):
+        return key[:-6]
+    return key
+
+
+def _count_live_sessions() -> dict[str, int]:
+    """各档活库的会话数；读不到的档记 -1（未知 ⇒ 不参与判定，宁可放过也不误拦）。"""
+    homes: dict[str, Path] = {"main": HERMES_HOME}
+    pdir = HERMES_HOME / "profiles"
+    if pdir.is_dir():
+        for d in sorted(pdir.iterdir()):
+            if d.is_dir() and not d.name.startswith(".") and (d / "profile.yaml").is_file():
+                homes[d.name] = d
+    out: dict[str, int] = {}
+    for name, home in homes.items():
+        db = home / "state.db"
+        if not db.is_file():
+            out[name] = 0
+            continue
+        try:
+            con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True, timeout=8)
+            try:
+                out[name] = int(con.execute("SELECT count(*) FROM sessions").fetchone()[0])
+            finally:
+                con.close()
+        except Exception as e:
+            log(f"shrink guard：读不到 {name} 的 state.db（{type(e).__name__}）⇒ 该档不参与判定")
+            out[name] = -1
+    return out
+
+
+def _count_mirror_sessions(mirror: Path) -> dict[str, int]:
+    """镜像里各档的会话条数（按会话 id 计；与 git HEAD 取较大值）。
+
+    HEAD 必须参与：工作树可能已经被某一轮误 prune 过（2026-10-31 实案），
+    只看磁盘会把「已经少了」的现状当成基线，闸门就永远不响。
+    """
+    counts: dict[str, int] = {}
+    sroot = mirror / "sessions"
+    if sroot.is_dir():
+        for d in sroot.iterdir():
+            if d.is_dir():
+                counts[d.name] = len({_session_key(f.name) for f in d.iterdir() if f.is_file()})
+    if (mirror / ".git").exists():
+        try:
+            p = subprocess.run(["git", "-C", str(mirror), "ls-tree", "-r", "--name-only", "HEAD",
+                                "--", "sessions/"], capture_output=True, text=True, timeout=120)
+            if p.returncode == 0:
+                head: dict[str, set[str]] = {}
+                for line in p.stdout.splitlines():
+                    parts = line.split("/")
+                    if len(parts) < 3 or parts[0] != "sessions":
+                        continue
+                    head.setdefault(parts[1], set()).add(_session_key(parts[-1]))
+                for k, v in head.items():
+                    counts[k] = max(counts.get(k, 0), len(v))
+        except Exception:
+            pass
+    return counts
+
+
+def shrink_guard(mirror: Path) -> tuple[bool, str]:
+    """本轮同步会不会把备份「清空」成一台空机器。返回 (是否放行, 拒绝原因)。"""
+    mir = _count_mirror_sessions(mirror)
+    total_mir = sum(mir.values())
+    if total_mir < SHRINK_GUARD_MIN_BASE:
+        return True, ""
+    live = _count_live_sessions()
+    known = {k: v for k, v in live.items() if v >= 0}
+    if not known:
+        # 一个档都读不到：没有可比对的事实，宁可放过——闸门的职责是拦住确凿的清空，不是猜。
+        return True, ""
+    total_live = sum(known.values())
+    if total_live >= total_mir * SHRINK_GUARD_RATIO:
+        return True, ""
+    gaps = sorted(((k, v) for k, v in mir.items() if v > known.get(k, 0)),
+                  key=lambda kv: -kv[1])[:5]
+    detail = "，".join(f"{k} 活库 {known.get(k, 0)} / 备份 {v}" for k, v in gaps)
+    more = len(mir) - len(gaps)
+    if more > 0:
+        detail += f"，另有 {more} 档"
+    return False, (f"活库 {total_live} 个会话 < 备份 {total_mir} 个的 "
+                   f"{int(SHRINK_GUARD_RATIO * 100)}%；缺口最大的档：{detail}")
+
+
 def export_sessions(report: dict, skip_exports: bool) -> None:
     report["exports"] = {}
     if skip_exports:
@@ -1314,6 +1414,8 @@ def main() -> int:
     ap.add_argument("--remote", default="", help="显式指定 remote URL")
     ap.add_argument("--allow-unverified-privacy", action="store_true",
                     help="无法验证仓库私有性时仍然推送（默认拒绝）")
+    ap.add_argument("--allow-shrink", action="store_true",
+                    help="允许「活库会话数远少于备份」时照常同步（默认拒绝，防新机清空备份）")
     ap.add_argument("--create-remote", action="store_true",
                     help="远端不存在时用 gh 创建私有仓")
     args = ap.parse_args()
@@ -1334,8 +1436,6 @@ def main() -> int:
         # 此时 report 还没建：只打可读错误并退出，别引用未定义变量（2026-10-26 自查踩到 UnboundLocalError）
         log(f"!! --mirror 指向的是文件而不是目录：{MIRROR}")
         return 2
-    MIRROR.mkdir(parents=True, exist_ok=True)
-    (MIRROR / "logs").mkdir(parents=True, exist_ok=True)
     report: dict = {
         "version": 1,
         "host": socket.gethostname(),
@@ -1344,6 +1444,23 @@ def main() -> int:
     }
     log(f"sync 开始 host={report['host']} home={report['hermes_home']}")
 
+    # 闸门必须在**建目录之前**：连 logs/ 与 meta/ 都不该动。
+    # 尤其 meta/sync-state.json：它是「上次成功同步」的唯一凭据，被一次拒绝覆盖后
+    # 哨兵会以为刚同步过（finished_at 新鲜 20 分钟），把真信号掩盖掉。
+    if not args.allow_shrink:
+        ok, why = shrink_guard(MIRROR)
+        if not ok:
+            log("!! 疑似新机 / 未完成恢复：本轮同步会把备份清空 —— 已拒绝（镜像零改动，只记本机账本）")
+            log(f"   {why}")
+            log("   先按 templates/RESTORE.md 把本机数据恢复回来再同步；"
+                "确要用本机现状覆盖备份，加 --allow-shrink")
+            report["aborted"] = "shrink_guard"
+            report["shrink_guard"] = why
+            append_run(report, t0, GUARD_EXIT)
+            return GUARD_EXIT
+
+    MIRROR.mkdir(parents=True, exist_ok=True)
+    (MIRROR / "logs").mkdir(parents=True, exist_ok=True)
     t_ph = time.time()
     collect_home(report)
     collect_profiles(report)
@@ -1441,7 +1558,9 @@ ATTENTION_MARKER = HERMES_HOME / "state" / "hb-sync-needs-attention"
 def _record_health(exit_code: int, line: dict) -> None:
     """连续性记账的**单一来源**：任何入口（cron 包装 / 哨兵 ①②④ / 手工）跑完都会更新。
 
-    失败 = exit_code != 0。连续 >=3 轮失败写"待查看"标记（不推送、不打扰）；
+    失败 = exit_code != 0，**但 exit 6（shrink guard 主动拒绝）不算**：它描述的是
+    「本机还没恢复」这个配置状态，不是机制故障；计成失败会让连续失败计数虚高、
+    写出 needs-attention，把真正的故障信号淹掉。连续 >=3 轮失败写"待查看"标记（不推送、不打扰）；
     一旦出现成功轮即清零并删掉标记——标记描述的是"当前是否仍处于连续失败状态"，
     条件消失就不该继续留着（否则旧标记会伪装成新故障）。
     """
@@ -1451,7 +1570,13 @@ def _record_health(exit_code: int, line: dict) -> None:
             data = {}
     except Exception:
         data = {}
-    n = 0 if exit_code == 0 else int(data.get("consecutive_failures") or 0) + 1
+    prev = int(data.get("consecutive_failures") or 0)
+    if exit_code == 0:
+        n = 0
+    elif exit_code == GUARD_EXIT:
+        n = prev                    # 不增不减：既不是成功也不是故障
+    else:
+        n = prev + 1
     data.update({
         "consecutive_failures": n,
         "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),

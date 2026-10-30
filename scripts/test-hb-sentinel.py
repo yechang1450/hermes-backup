@@ -30,14 +30,20 @@ SENTINEL = SCRIPT_DIR / "hb-sentinel.py"
 BASE = Path(os.environ.get("HB_TEST_BASE") or tempfile.mkdtemp(prefix="hb-sentinel-test-"))
 
 
-def make_home(name: str, *, gw_start="A", msg_age=3600.0, busy=False, fail_stub=False):
+def make_home(name: str, *, gw_start="A", msg_age=3600.0, busy=False, fail_stub=False,
+              guard_stub=False):
     shutil.rmtree(BASE / name, ignore_errors=True)   # 每个场景独立：清掉上一轮残留（含 state 文件）
     home = BASE / name / "home"
     (home / "state").mkdir(parents=True, exist_ok=True)
     (home / "skills" / "hermes-cloud-backup" / "scripts").mkdir(parents=True, exist_ok=True)
     stub = home / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
-    stub.write_text('import sys\nprint("sync 完成：stub ok")\nsys.exit(%d)\n' % (1 if fail_stub else 0),
-                    encoding="utf-8")
+    if guard_stub:
+        stub.write_text('import sys\n'
+                        'print("!! 疑似新机：活库 87 个会话 < 备份 3603 个的 50%")\n'
+                        'sys.exit(6)\n', encoding="utf-8")
+    else:
+        stub.write_text('import sys\nprint("sync 完成：stub ok")\nsys.exit(%d)\n' % (1 if fail_stub else 0),
+                        encoding="utf-8")
     (home / "gateway.pid").write_text(json.dumps({"start_time": gw_start}), encoding="utf-8")
     (home / "gateway_state.json").write_text(json.dumps(
         {"active_agents": 1 if busy else 0, "active_work": ["turn"] if busy else []}), encoding="utf-8")
@@ -176,6 +182,21 @@ def main() -> int:
     p, st, spawned = run(h, m)
     ok_all &= check("不触发", st.get("last_trigger_tag") is None and not spawned,
                     f"tag={st.get('last_trigger_tag')}")
+
+    print("== S11 shrink guard 拦下：只提示一次、24h 内静默、不算失败 ==")
+    h, m = make_home("s11", msg_age=60, guard_stub=True); set_last_sync(m, 3 * 3600)
+    (h / "state" / "hb-sentinel-state.json").write_text(json.dumps({"gw_start": "A"}), encoding="utf-8")
+    p, st, spawned = run(h, m)
+    ok_all &= check("首次触发并提示", spawned and "shrink guard" in p.stdout, p.stdout.strip()[:80])
+    ok_all &= check("不算失败（rc=0）", p.returncode == 0, f"rc={p.returncode}")
+    ok_all &= check("写下了 24h 静默标记",
+                    (h / "state" / "hb-sync-guard-blocked.json").is_file())
+    hb = h / "state" / "hb-sync-child.log"
+    before = hb.stat().st_size if hb.is_file() else 0
+    p2, st2, _ = run(h, m)
+    after = hb.stat().st_size if hb.is_file() else 0
+    ok_all &= check("静默期内不再触发同步", (not p2.stdout.strip()) and after == before,
+                    f"out={p2.stdout.strip()[:60]!r} size {before}->{after}")
 
     print("== 总判定：%s ==" % ("PASS" if ok_all else "FAIL"))
     return 0 if ok_all else 1

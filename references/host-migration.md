@@ -62,7 +62,7 @@ gh api repos/<owner>/<repo> --jq .size                  # 远端体积（KB）
 
 ## D. 收尾判据（三条同时成立才算迁移完成）
 
-1. 一轮真同步：`mirror=<新路径>` + `committed=True pushed=True` + `ls-remote` == 本地 HEAD。
+1. 一轮真同步：`mirror=<新路径>` + `committed=True`；纯本机模式下 `pushed=None` 是正常值，只有 `--push` 的轮次才要求 `pushed=True` 且 `ls-remote` == 本地 HEAD。
 2. 一轮真恢复：小档会话数/消息数与镜像一致、`message_uid` 无空值。
 3. 旧副本 HEAD 与 reflog 时间戳在观察窗内不动（新镜像已推进 ≥1 轮）。
 
@@ -99,3 +99,80 @@ gh api repos/<owner>/<repo> --jq .size                  # 远端体积（KB）
 要点：①只扫**已跟踪文件**（`git grep` 天生如此，未跟踪的本来不算账）；②**单仓 60 秒超时**，超时记「未扫完」继续下一个，不重试；③**边跑边 append 写盘**，别攒到最后一次性写（被打断就全丢）；④报告把「代码/脚本」与「文档」分开——真会出事的是 `.py/.ps1/.rs/.gd/.sh/.cfg`，`.md` 里多半是历史记录，不必改。
 
 跨盘复制过来的 Rust `target/` 会带着旧盘的绝对路径，`cargo test` 直接 rc=101（`couldn't find file …/target/debug/build/…/private.rs`）——**清掉重建**（`cargo clean`），别改 `.cargo/config` 或环境变量去迁就它。同理，判断「迁移后某仓是否干净」不能看 `target/` 在不在，要看重建后测试是否全绿。
+
+## G. 全量改名（技能 / 项目目录 / 远端仓）
+
+适用：主人说「以后叫 X」——把 `hermes-cloud-backup` 这类旧名从整条链上换掉。**改名是迁移的子集**，漏一处就出现「技能加载不到 / cron 跑旧路径 / 推错仓」。
+
+### G1. 改名范围（一次列全，别边改边找）
+
+| # | 位置 | 改什么 |
+|---|---|---|
+| 1 | 技能目录名 | `skills/<旧名>` → `skills/<新名>` |
+| 2 | `SKILL.md` frontmatter | `name:` 与 `description:`（描述要同时改成新架构，否则「本地备份」还写着「via a private GitHub repo」） |
+| 3 | 技能内全部文本 | `.py/.sh/.md/.json/.ps1` 里的旧名与旧路径；改后 `grep -r <旧名>` 应**只剩 `.git/` 内部**（reflog、config） |
+| 4 | 运行目录副本 | `<HERMES_HOME>/scripts/*.py` 里的 `SYNC_SCRIPT = HOME/"skills"/"<名>"/...`——这是 cron 实际执行的那份，漏改＝cron 每晚报 `FileNotFoundError` |
+| 5 | 项目目录 | `<工作区>/build/<旧名>` → `<新名>`；改完把 `git remote set-url` 指到远端新名 |
+| 6 | 镜像里的副本 | `<镜像>/tools/`（sync 每轮覆盖，改不改都会被下一轮刷成新值，但手改期间别怕） |
+| 7 | 本地配置与远端 | `local.json` 的 `repo`、仓的 `origin` URL、GitHub 仓名 |
+
+### G2. Windows 下目录被占用就改不了名
+
+改名报 `PermissionError: [WinError 32] 另一个程序正在使用此文件` ＝ 有进程把它当 **cwd**（正在跑的 sync、cron 包装器、子代理都会）。**不要循环硬撞**，用「等空闲窗口再原子改名」：
+
+```python
+import os, time, psutil
+OLD, NEW = r"<旧目录>", r"<新目录>"
+def holders():
+    out = []
+    for p in psutil.process_iter(["pid", "cmdline", "cwd"]):
+        cw, cl = str(p.info["cwd"] or ""), " ".join(p.info["cmdline"] or [])
+        if OLD in cw or OLD in cl:
+            out.append(p.info["pid"])
+    return out
+while time.time() < deadline:
+    if not holders():
+        try:
+            os.rename(OLD, NEW); break
+        except OSError:
+            pass
+    time.sleep(2)
+```
+
+判据：改名成功那一刻打时间戳，**立刻**跑字符串替换（旧路径引用从下一秒起就是死链）；改完 `skill_view(name="<新名>")` 必须能加载、`scripts/*.py` 全部 `py_compile` 通过。
+
+### G3. 删远端仓之前先落本地归档（顺序不能反）
+
+删 GitHub 数据仓前，确认**本地已经有它的全部对象**：
+
+```bash
+git clone --mirror <远端URL> <本地>/gen1.git      # 大仓几分钟到十几分钟，后台跑
+git -C <本地>/gen1.git rev-list --count --all      # 必须 >0
+for r in main master <其它分支>; do
+  R=$(git ls-remote origin refs/heads/$r | cut -f1)
+  git -C <镜像> cat-file -e "$R" && echo "$r 本地已有" || echo "$r **缺**"
+done
+```
+
+三个 ref 全在本地才能 `DELETE /repos/<owner>/<repo>`；任缺一条就先把缺的拉下来。删完把镜像的 `origin` 移除（否则下一轮 sync 会把它写回去，指向一个 404 仓库）——这是**设计后果**，不是故障。
+
+转纯本机后有三条不变量，破了任何一条都可能把私人数据推到公开面：
+
+1. `sync.py` **默认只 commit**，`--push` 才推送；判据句随之改成 `pushed=None` 是正常值（见 §G5）。
+2. `local.json` 的 `repo` 置空、`mirror` 指本机仓——**数据镜像绝不能复用技能源码仓的名字**（那个仓是 public，内含会话与凭据）。
+3. 每轮 sync 会把 `--remote` 解析出的 URL 写回 `origin`；没有 `--remote` 时应保持**无 origin**。看到 origin 又冒出来，先看是谁在带 `--remote` 跑，而不是删了就算修好。
+
+### G4. 「数据丢了」之前，先把 temp 里的旧副本当成候选源
+
+迁移/清理现场常在 `temp` 留三样东西，任一样都可能是唯一的副本：**迁移暂存目录**（旧镜像工作树的整体拷贝，可能带 `.git`）、**旧机 `state.db` 快照**、**导出 tar/jsonl**。判「丢了」之前做一次四方差集（按**会话 id 集合**，不看体积/文件数）：
+
+```python
+staging_ids − mirror_ids   # 只此一份：立即 restore_sessions --source 捞回
+old_db_ids  − live_ids     # 旧机整库比活库全？
+```
+
+实案：迁移暂存里躺着 1 个活库和镜像都没有的会话（171 条消息），靠这条差集找回；旧机 10-29 全库 2,119 个会话是活库的**真子集**（差集 0），证明「恢复没漏」——这个结论用集合验，不要用体积或条数猜。
+
+### G5. 改了默认行为，文档里所有「判据句」要跟着改
+
+把「默认推送」改成「默认只本地提交」之后，`完成标准：pushed=True`、`同步后 pushed 为 true`、`收尾判据 committed=True pushed=True` 这几句全部变成**假判据**（会让人把正常轮判成失败，或反向放过）。改代码的同一次把这几处一起改掉：纯本机模式的正常末行是 `committed=True pushed=None`，判据换成「镜像 HEAD 前进 + `git status` 只剩未跟踪增量」。

@@ -1,3 +1,8 @@
+## 1.1.1 — 2026-10-31 · 修文档完整性误报
+
+- `SKILL.md` 指向**另一个技能**的 `hermes-mechanics/scripts/session-ctl.py`，被 selfcheck 的文档引用检查
+  判成悬空（它只按本仓文件核对）⇒ 把该文件名加进 `EXTERNAL_NAMES` 豁免清单。自检复跑 **16 项 / 0 失败 / 63.4s**。
+
 ## 1.1.0 — 2026-10-31 · 改名 hermes-backup ＋ 转纯本机线下备份
 
 主人令：`hermes-cloud-backup` 全量改名 `hermes-backup`；备份改为**只在本机**做，GitHub 上的**数据仓删除**，

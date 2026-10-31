@@ -28,6 +28,8 @@ EXTERNAL_NAMES = {
     "SOUL.md", "config.yaml", ".env", "auth.json", "profile.yaml",
     "channel_directory.json", "projects.db", "shared-state.db", "kanban.db",
     "sessions.json", "gateway_routing.json", "runs.jsonl",
+    # 别的技能里的脚本（本技能文档会指过去，不是本仓文件）
+    "session-ctl.py",
 }
 
 

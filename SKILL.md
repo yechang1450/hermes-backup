@@ -1,7 +1,7 @@
 ---
 name: hermes-backup
 description: Local git-mirror backup/restore of Hermes state (no cloud).
-version: 1.1.0
+version: 1.1.1
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -15,7 +15,7 @@ metadata:
 > `sync.py` 默认只 commit 到本地、**不推送**（要推才加 `--push`）；GitHub 上只保留本技能源码仓，
 > 不再保留任何数据仓。
 
-# hermes-backup — Hermes 数据云备份 / 恢复
+# hermes-backup — Hermes 数据备份 / 恢复
 
 > **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/main:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。⑧**公开仓零本机痕迹**：脚本/测试里不得出现 `C:/Users/<名>` 这类绝对路径（既泄露用户名，又让测试换机即败）——一律按 `Path(__file__).resolve().parent` 拼；发布前用 `grep -rn "C:/Users/" scripts/` 扫一遍。⑨**文档里不写死可增长的数量**（几条坑 / 几套测试 / 几个场景 / 几个脚本）：每加一条就要回来改 SKILL、references、README 三处，漏改了也没人报错（实见同一份文档里「62 条」「8 套」「10 个场景」「9 套」四处同时过期）。要么写「以 `ls scripts/test-*.py | wc -l` 为准」，要么只给末行判据；能写死的只有能对回 `sync.py` 同一行的**代码常量**（分片阈值 / 超时 / 体积闸）。⑩**别把技能目录整份拷进暂存仓**——owner 与并行 agent 会直接改仓里的文件（实测：README 里新加的许可与权利声明被整份覆盖时静默回滚，还把他早删掉的 `LICENSE` 带了回去）；推前按 `git status` 只复制**你实际改过的那几个文件**，提交前 `git diff` 扫一眼有没有删掉别人的段落。
 
@@ -23,7 +23,19 @@ metadata:
 **本机 git 镜像仓**（默认 `~/hermes-backup`；2026-10-31 起纯线下，不联网、不推 GitHub），并支持在任何新机上
 从该仓**一键恢复到重装前状态**。本技能含两套流程：**日常同步**（源机）与**新机恢复**（目标机）。
 
-架构一句话：镜像工作区 `~/hermes-backup` 采集本机数据 → commit → push；恢复方向相反。
+架构一句话：镜像工作区 `~/hermes-backup` 采集本机数据 → commit（**默认不 push**，`--push` 才推）；恢复方向相反。
+
+## 单写者纪律（同一条线只许一个进程写镜像）
+
+镜像仓、`state.db`、技能目录这三样**都不是多写者安全的**。换机/重装后的「跑通」任务尤其容易撞车：
+
+- **动手前先查占用**：读 `<HERMES_HOME>/state/hermes-backup-sync.lock`（按 pid 判活），再用 psutil 扫有没有进程的
+  `cwd` 落在镜像或技能目录里。有活写者就**等它收工**——不杀、不删锁；Windows 下目录被当 cwd 时连**改名都会失败**（WinError 32）。
+- **`--allow-shrink` 是逃生口，不是常规参数**：语义＝「我确认用本机现状覆盖备份」。误用一次，工作树里**未跟踪**的会话文件
+  会被 prune 掉，且**没有任何副本可恢复**（git 里没有、活库里没有）。真要放行，先打可回取点：
+  `git branch -f pre-<机器>-takeover HEAD`（本地仓没有远端也能打）。
+- **恢复也必须单写者**：两条线同时对同一活库跑 `restore_sessions` / 合并脚本，会留下**重复消息**与**空会话壳**；
+  判据与处置见「Verification」节。看到活库 `state.db-wal` 的 mtime 一直在动＝还有人在写，此时只读不写。
 
 ## When to Use
 
@@ -101,6 +113,8 @@ metadata:
   同理：用户自己粘贴/上传的原始输入存档（`attachments/`、`composer-pastes/`）是取证材料，不是配置。
 
 迁移**是否真的完成**按 `references/host-migration.md` 的六路审计验，不要凭「目录都在」下结论。
+**技能 / 项目目录改名**（如 `hermes-cloud-backup` → `hermes-backup` 这类全量更名）按同文件 §G 的流程走——
+目录被进程当成 cwd 时 Windows 会拒绝改名，必须等空闲窗口再原子改，不能边跑边改。
 
 ## 文件构成
 
@@ -195,10 +209,15 @@ metadata:
 
 **发现工作树已经被误 prune（还没提交）时，整体回滚只要一条命令**：`git -C <镜像> checkout -- .` —— 已跟踪文件全部还原（实测 1.5 万个文件 4 秒，`D` 9839→0、`M` 168→0），**未跟踪的新文件原样保留**，而那正是本轮刚导出的增量。判据：`git status --porcelain` 的分组从 `D/M/??` 变成只剩 `??`。**别用 `git reset --hard`**（连未跟踪增量一起丢）、也别 `git clean`。回滚后先 `find <层> -type f | wc -l` 复核对得上 HEAD，再决定要不要重跑。这条路径救过一次 8,284 个 profile 文件的清空——prune 在采集阶段就跑完了，而提交在它之后，**中间这段窗口是可逆的**。
 
-**内存不是拦路虎**：分块渲染（`CHUNK=4`）实测 1793MB 会话数据峰值只吃 0.2GB（空闲 33.1→32.9GB）。整档渲染的 `MemoryError` 是旧版本的事，不必因为担心内存而不敢跑；但也别在同一时间开别的重活。
+**内存两道闸（别拿「以前没炸过」赌）**：①导出走分块渲染（`CHUNK=4`），实测 1793MB 会话峰值只吃 0.2GB；
+②`sync.py` 在批量导出前查可用内存——**<3GB 跳过本轮（exit 2，下轮再试）**、**<8GB 放弃单进程批量、退逐档 CLI**。
+统一内存机器（核显与 CPU 共享同一池）尤其要守：图形进程吃掉的那份同时也是系统内存，爆掉会连桌面端一起带走。
+同一时间不要叠自检 `--audit`、全量克隆、`git reset --hard` 这类重活。
 
 1. 在 `terminal` 里跑 `python <SKILL>/scripts/sync.py`（后台跑也可以；其日志在 `<镜像>/logs/`）。
-   完成标准：末尾出现 `sync 完成：… committed=… pushed=True`，且 `git ls-remote` 与本地 HEAD 一致。
+   **完成标准分两种模式**：纯本机模式下末尾是 `sync 完成：… committed=True pushed=None`，且镜像 `git log -1`
+   比上一轮前进、`git status --porcelain` 只剩未跟踪增量；只有显式加了 `--push` 才要求 `pushed=True` +
+   `git ls-remote` 与本地 HEAD 一致。别拿 `pushed=None` 判失败——那正是本机模式的正常值。
 2. 铁规：**永不 force-push**；推送前脚本自检仓库私有性（gh 可用时；非私有会尝试改回、失败即中止推送）。
 3. 节流建议：每日 ≤1–2 次或按需。**v0.3 存储格式已落地（0.3.0）**：会话原样存文本、**>12MB 自动分片**（0.4.26），每轮入历史的是「真实新增 ＋ 变动分片」而不是整份文件。**但别把它读成「体积无顾虑」**：容量仍随内容增长与末片重写上升，必须按 `references/generations.md` 的「容量巡检」定期量 `churn-report.py` 与远端 `.size`，到**该文件「触发条件」那四条**任一成立就换代（判据只在那里，别在别处另写数字）——2026-10-24 就是因为把这句当成「已解决」而漏看了 150MB/小时的暴涨。
 **另外记住：`churn-report.py` 量的是「新增 blob 字节」，不是仓体积增长**（git 会对整份重写的文件做 delta）；判容量一律看 `gh api … --jq .size`。
@@ -332,7 +351,27 @@ metadata:
   现有 `test-layout.py` · `test-split.py`(阈值直读 `sync.PART_MAX`) · `test-audit-coverage.py` · `test-hb-sentinel.py` · `test-hb-health.py` · `test-kanban-snapshot.py` · `test-kanban-scope.py` · `test-reap-exporters.py` · `test-prune-protect.py` · `test-zero-session.py` · `test-shrink-guard.py` · `test-commit-guards.py`。一条命令跑全：`scripts/selfcheck.py`。
   校验判据是**每套自己打印的「N 项，失败 0」**，不是 rc=0（脚本可能在断言前就因语法/路径错退出）。改阈值类常量时，测试要读运行时值（`sync.PART_MAX`）而不是抄一个字面量——两处各写一个数就会「测试绿、生产红」的反向事故。
 - **`--collect-only` 不是快速探针**：它只跳过 git 段，**导出照跑**（本机实测约 10 分钟）——想验证采集正确性（白名单、快照、prune）值得跑，想「看一眼状态」就别用它。跑完镜像里是未提交改动，别当成异常；下一轮会连带提交。
-- 同步后：`meta/sync-state.json` 的 `pushed` 为 true；`git ls-remote origin` 与本地提交一致。
+- 同步后：纯本机模式看 `meta/sync-state.json` 的 `finished_at` 是否刷新 + 镜像 HEAD 是否前进（`pushed` 为 `null`
+  是正常值）；只有 `--push` 的轮次才看 `pushed` 为 true 且 `git ls-remote origin` 与本地提交一致。
+- **恢复完整性要看三个数，不只看会话数**：`sessions` 条数、`messages` 条数、有消息的会话数。后两者对不上时按两条判：
+  ①**重复消息**＝`select session_id,message_uid,count(*) c from messages where message_uid is not null group by 1,2 having c>1`
+  （>0 说明同一会话被导入了不止一次——并发恢复、或合并脚本重跑）；
+  ②**空会话壳**＝`select count(*) from sessions s where not exists(select 1 from messages m where m.session_id=s.id)`
+  （会话行在、消息没进来，常见于合并脚本先建壳后填内容、中途被打断）。
+  **先报数不动手**：确认没有别的进程还在写活库（看 `state.db-wal` 的 mtime），且 `count(*)` 连续 ~15 分钟不变，再修；否则修完又被覆盖。
+- **空会话壳先回源核对，别急着补导**：拿镜像里该会话的 JSONL 数一遍 `len(json.loads(line).get("messages") or [])`，
+  **镜像也是 0** ⇒ 它本来就是空壳（`source=subagent` / `gui` 的会话常有），不需要任何回填；只有「镜像有内容、活库为空」
+  才值得补，补的时候仍走 `--source <只放这些文件的目录>`，绝不 `--all`。
+- **重复消息的修法**（同 `(session_id, message_uid)` 多份 ⇒ 并发导入/合并脚本重跑）：**按最老 id 保留一份**，分块删，
+  全程低内存——①先快照（`sqlite3` 的 `backup()`，页级拷贝、内存恒定，别 `cp` WAL 库）；②每事务 2,000 行：
+  `delete from messages where id in (select id from messages m where m.session_id=? and m.message_uid is not null
+   and exists(select 1 from messages m2 where m2.session_id=m.session_id and m2.message_uid=m.message_uid and m2.id<m.id) limit 2000)`；
+  ③`message_uid` 为 NULL 的行一律不动（它们无法判重）；④`messages_fts*` 的 delete 触发器在位时会自己跟随，
+  删完跑 `pragma quick_check` + `insert into messages_fts(messages_fts) values('integrity-check')`。
+  先在合成小库上把这段 SQL 跑一遍断言「每组只留最早一行」，再碰真库。
+- **别在别人还在写的时候去重**：合并/导入进程常以每秒一条的速度长跑，期间重复行会**继续增长**；盯着
+  `select count(*) from messages` 直到静默，或把「等静默→去重→校验」做成一个可中断的等待器（带 3 小时兜底），
+  而不是占着回合空转。
 - **「让路」的一轮也是 exit 0，它一个字节都没同步。** 防撞锁命中时 `sync.py` 打一行
   `已有另一轮同步在进行（锁年龄 Ns）——本轮退出，让路` 然后 **rc=0** 退出。只看退出码会把
   「什么都没干」记成「同步成功」。判据是**日志首行 + 证据**：先读那行日志，再看 `meta/sync-state.json`

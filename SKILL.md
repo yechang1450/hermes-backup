@@ -1,7 +1,7 @@
 ---
 name: hermes-backup
 description: Local git-mirror backup/restore of Hermes state (no cloud).
-version: 1.1.1
+version: 1.1.2
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -87,7 +87,7 @@ metadata:
 2. 代码默认值用 `Path.home() / "hermes-backup"`，**绝不写死 `C:/Users/<名>`**：写死了既泄用户名，又让公开仓的隐私扫描（`privacy-scan.py` 第三道）必红。
 3. 文档与示例一律 `~/hermes-backup`、`~/workspace`（Windows 即 `C:\Users\<你>\…`）。
 4. 新镜像若是「从旧盘拷过来的中间态」，先 `git fetch` 并对齐远端（`git reset --hard origin/main`），**别在落后的工作树上直接跑轮**。
-5. **点火一轮真同步验收**：日志头 `解析：mirror=<新路径>`、末行 `committed=True pushed=True`、`git ls-remote` 与本地 `HEAD` 一致。
+5. **点火一轮真同步验收**：日志头 `解析：mirror=<新路径>`、末行 `committed=True`（纯本机模式下 `pushed=None` 是**正常值**）、镜像 HEAD 比上一轮前进；只有显式 `--push` 的轮次才要求 `pushed=True` 且 `git ls-remote` 与本地 `HEAD` 一致。
 6. 记忆里写**一条全局映射**（旧路径 → 新路径）就够，比逐条改上百处便宜且不会漏。
 7. **重装/换机后重建两个 cron 任务，备份线才会真的跑。** 镜像仓、脚本、`local.json` 都在 **不等于**自动同步在跑：
    实测新机上 `cron/jobs.json` 里 0 条，镜像仓最后一轮停在数小时前，而 `HERMES_HOME\scripts\` 里的
@@ -375,7 +375,7 @@ metadata:
 - **「让路」的一轮也是 exit 0，它一个字节都没同步。** 防撞锁命中时 `sync.py` 打一行
   `已有另一轮同步在进行（锁年龄 Ns）——本轮退出，让路` 然后 **rc=0** 退出。只看退出码会把
   「什么都没干」记成「同步成功」。判据是**日志首行 + 证据**：先读那行日志，再看 `meta/sync-state.json`
-  的 `finished_at` 有没有刷新、`pushed` 是否为 true、`git ls-remote` 是否等于本地 HEAD。
+  的 `finished_at` 有没有刷新、`committed` 是否为 true（纯本机模式下 `pushed` 为 null，不是故障）、镜像 HEAD 是否前进；只有 `--push` 轮次才核 `git ls-remote`。
   同理，`state/hb-sync-runs.jsonl` 里 `committed`/`pushed` 为 `null` 的行是**让路/空转轮**，不是失败——
   别把它们统计进失败率。碰上别人正在跑时**不要杀它、不要删锁**，等它收工再按上面三条验收；
   同一台机上常有另一个会话在做同一件事（换机后的「跑通」任务尤其容易撞）。

@@ -1,3 +1,9 @@
+## 1.1.2 — 2026-10-31 · 验收口径对齐纯本机模式
+
+- 还有三处假判据残留（`SKILL.md` 两处、`references/operations.md` 一处）写着「末行 `pushed=True`」——
+  纯本机模式下 `pushed` 恒为 `null`，照着这条验收会把**正常轮判成失败**。统一改成
+  「`committed=True` + 镜像 HEAD 前进」；只有显式 `--push` 的轮次才核 `pushed=True` 与 `git ls-remote`。
+
 ## 1.1.1 — 2026-10-31 · 修文档完整性误报
 
 - `SKILL.md` 指向**另一个技能**的 `hermes-mechanics/scripts/session-ctl.py`，被 selfcheck 的文档引用检查

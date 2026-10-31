@@ -15,7 +15,7 @@ cat "$HERMES_HOME/state/hb-sync-health.json"
 ls "$HERMES_HOME/state/hb-sync-needs-attention" 2>/dev/null && cat "$HERMES_HOME/state/hb-sync-needs-attention"
 ```
 
-**正常长相**：`runs.jsonl` 末行 `exit 0`、`pushed true`、`duration_s` 250–500；`consecutive_failures=0`；无 marker。
+**正常长相**：`runs.jsonl` 末行 `exit 0`、`committed true`（纯本机模式 `pushed` 为 `null` 属正常）、`duration_s` 250–500；`consecutive_failures=0`；无 marker；镜像 HEAD 每轮前进。
 
 ## 每周（2 分钟）
 

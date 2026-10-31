@@ -1,3 +1,12 @@
+## 1.1.3 — 2026-10-31 · 纯本机模式不再碰 remote ＋ 运行副本回归"壳"
+
+- **`ensure_repo(need_remote=...)`**：纯本机模式（无 `--push`）**完全不碰 remote**——不再要求解析备份仓地址，
+  也不再每轮把已删除的远端地址写回 `origin`。此前每轮都会重建 origin，留下
+  `refs/remotes/origin/HEAD → 0000000…` 的空指针，`git fsck` 直接 rc=2。
+- **`HERMES_HOME\scripts\sync.py` 恢复成"转调壳"**：换机后发现它是整份副本（88KB），已与技能源漂移
+  （缺分块渲染、缺内存硬闸、缺纯本机模式），而手工轮与 cron 轮打的都是这份旧的。现在只有 914 字节，
+  直接 `runpy` 执行技能目录那份，改一处即生效。原文件已备份 `.bak-20261031-shim`。
+
 ## 1.1.2 — 2026-10-31 · 验收口径对齐纯本机模式
 
 - 还有三处假判据残留（`SKILL.md` 两处、`references/operations.md` 一处）写着「末行 `pushed=True`」——

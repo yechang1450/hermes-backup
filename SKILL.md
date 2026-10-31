@@ -1,7 +1,7 @@
 ---
 name: hermes-backup
 description: Local git-mirror backup/restore of Hermes state (no cloud).
-version: 1.1.2
+version: 1.1.3
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -259,7 +259,9 @@ metadata:
   所以 `--all` 会把用户刚删的每一会话原样灌回（实测一轮 `imported=2216`，与刚被删的 2,215 个一一对上）。四条执行纪律：
   ① `--all` 只给换机/灾难恢复用；日常恢复一律 `--source <只放目标 jsonl 的目录>`；
   ② 跑之前先算「镜像 id 集合 − 活库 id 集合」，把差额贴给用户确认——那些不是「缺失待补」，而很可能就是「他刚删的」；
-  ③ 真删的会话必须连带清镜像（删 jsonl 并 commit），否则镜像永远是恢复源，删多少次都能捞回来；
+  ③ 真删的会话必须连带清镜像（删 jsonl 并 commit），否则镜像永远是恢复源，删多少次都能捞回来；顺序是
+  「等该会话的活跃租约结束（正在回答时删除会被 `exclude_active_write_guards` 拒掉）→ 删 → 跑一轮 sync
+  让 `prune_stale` 剪掉 `sessions/<档>/<sid>.part-*.jsonl` 并推送」，只删库不跑那一轮，下一次恢复照样复活；
   ④ 归档（`archived=1`）不受影响——官方 import 见 id 已存在就跳过，所以「想让会话消失」的首选是归档不是硬删。
   删除/归档/租约侧的做法见另一个技能 `hermes-mechanics` 的会话库参考（L 篇）与其中的 `session-ctl.py`。
 - **网关计划任务不加"进程死了自动拉"**：官方任务无重启策略是设计；实测加 `TimeTrigger` 每 10 分钟拉一次会空烧

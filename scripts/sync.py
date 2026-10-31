@@ -1414,7 +1414,9 @@ def purge_index_lock(min_age: int) -> bool:
         return False
 
 
-def ensure_repo() -> None:
+def ensure_repo(need_remote: bool = True) -> None:
+    """准备镜像仓。need_remote=False（纯本机模式）时**完全不碰 remote**——
+    否则每轮都会把已删除的远端地址重新写回 origin，留下 refs/remotes/origin/HEAD 全零指针。"""
     if not (MIRROR / ".git").exists():
         log("git init")
         git("init", "-b", "main")
@@ -1423,7 +1425,7 @@ def ensure_repo() -> None:
             git("config", "user.email", GIT_EMAIL)
         git("config", "core.autocrlf", "false")
         git("config", "core.safecrlf", "false")
-    if not REMOTE_URL:
+    if need_remote and not REMOTE_URL:
         raise RuntimeError("无法解析备份仓地址：请先 `gh auth login`，"
                            "或用 --owner <你的GitHub用户名> / --remote <URL> 指定")
     # 新机常见坑：镜像是用户手工 clone 的（.git 已存在，走不到上面的 init 分支），
@@ -1435,16 +1437,17 @@ def ensure_repo() -> None:
     if not git("config", "user.name", check=False).stdout.strip():
         git("config", "user.name", GIT_NAME or GH_OWNER or "hermes-backup")
         log("git 身份缺失：已补本仓 user.name")
-    remotes = git("remote", check=False).stdout.split()
-    if "origin" not in remotes:
-        git("remote", "add", "origin", REMOTE_URL)
-    elif git("remote", "get-url", "origin").stdout.strip() != REMOTE_URL:
-        git("remote", "set-url", "origin", REMOTE_URL)
+    if need_remote:
+        remotes = git("remote", check=False).stdout.split()
+        if "origin" not in remotes:
+            git("remote", "add", "origin", REMOTE_URL)
+        elif git("remote", "get-url", "origin").stdout.strip() != REMOTE_URL:
+            git("remote", "set-url", "origin", REMOTE_URL)
 
 
 def commit_and_push(message: str, no_push: bool, allow_shrink: bool = False) -> dict:
     result: dict = {}
-    ensure_repo()
+    ensure_repo(need_remote=not no_push)
     # 冲突残留防御：merge 状态未清理则中止
     if (MIRROR / ".git" / "MERGE_HEAD").exists():
         raise RuntimeError("仓库处于未完成的 merge 状态，请人工处理后重跑")

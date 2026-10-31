@@ -1448,6 +1448,30 @@ def ensure_repo(need_remote: bool = True) -> None:
             git("remote", "set-url", "origin", REMOTE_URL)
 
 
+def _gc_if_bloated(limit_mb: int = 800) -> None:
+    """松散对象超阈值就打包。
+
+    git 默认 `gc.auto=6700` 是**按个数**算的，而这里每轮新增的是大文件
+    （单轮实测 +300MB 松散），个数远没到阈值体积已经上去了；不主动打包，
+    `.git` 会一直膨胀、`status`/`log` 也会变慢。失败不影响本轮。
+    """
+    try:
+        out = git("count-objects", "-v", check=False).stdout or ""
+        size_kb = 0
+        for line in out.splitlines():
+            if line.startswith("size:"):
+                size_kb = int(line.split(":", 1)[1].strip())
+                break
+        mb = size_kb / 1024
+        if mb >= limit_mb:
+            log(f"松散对象 {mb:.0f}MB ≥ {limit_mb}MB —— 执行 git gc（可能要几分钟）")
+            t = time.time()
+            r = git("gc", "--quiet", check=False, timeout=1800)
+            log(f"git gc 完成：{time.time() - t:.0f}s rc={r.returncode}")
+    except Exception as e:  # noqa: BLE001
+        log(f"!! 自动 gc 失败（不影响本轮）：{type(e).__name__}: {e}")
+
+
 def commit_and_push(message: str, no_push: bool, allow_shrink: bool = False) -> dict:
     result: dict = {}
     ensure_repo(need_remote=not no_push)
@@ -1485,6 +1509,8 @@ def commit_and_push(message: str, no_push: bool, allow_shrink: bool = False) -> 
     else:
         result["committed"] = False
         log("无变更，跳过 commit")
+    if result.get("committed"):
+        _gc_if_bloated()
     if no_push:
         result["pushed"] = None
         return result

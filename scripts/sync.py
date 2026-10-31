@@ -201,7 +201,10 @@ LOCK_FILE = HERMES_HOME / "state" / "hermes-backup-sync.lock"
 LOCK_STALE_SECONDS = 3 * 3600           # 兜底：无法核实持有者时的陈旧锁窗口（正常由 pid 存活判定立即接管）
 
 EXCLUDE_PATTERNS = ("*.lock", "*.pid", "*-wal", "*-shm", "*~", "Thumbs.db", "desktop.ini", "*.pyc")
-EXCLUDE_DIRNAMES = {"__pycache__", "node_modules"}
+# .git 必须排除：技能目录本身是 git 仓，整目录拷进镜像会让 git 把该路径记成
+# gitlink（mode 160000，指向技能仓的某个提交）——镜像里就只剩一个指针，
+# 换机恢复时那个目录是空的，等于技能文件没备份（2026-10-31 实测发现）。
+EXCLUDE_DIRNAMES = {"__pycache__", "node_modules", ".git"}
 
 HOME_FILES = [
     "config.yaml", ".env", "auth.json", "profile.yaml", "SOUL.md",

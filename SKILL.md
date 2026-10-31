@@ -64,7 +64,7 @@ metadata:
 | 会话层恢复 | `python <REPO>/tools/run_in_runtime.py <REPO>/tools/restore_sessions.py --all`（加 `--fast-import`，大型历史实测 2–4 倍速，见 references/session-storage.md） |
 | 拼包（给桌面端导入用） | `python <REPO>/tools/concat_sessions.py main` |
 | 全量自检（一条命令） | `python <SKILL>/scripts/selfcheck.py --repo <REPO>`（默认：编译＋全部 `test-*.py` 回归＋文档引用＋公开面卫生；加 `--repo` 再多跑分片体检，加 `--audit` 再跑会话层覆盖率审计。**项数以它自己打印的合计为准**） |
-| 覆盖率审计（镜像 vs 活库） | `python <SKILL>/scripts/audit-coverage.py --repo <REPO> --home <HERMES_HOME>`（PASS 打印 `AUDIT-PASS`，硬伤退出码 1；加 `--with-files` 连文件层一起审） |
+| 覆盖率审计（镜像 vs 活库） | `python <SKILL>/scripts/audit-coverage.py --repo <REPO> --home <HERMES_HOME> --profile main`（PASS 打印 `AUDIT-PASS`，硬伤退出码 1；加 `--with-files` 连文件层一起审） |
 | 数据仓换代（体积到阈值） | `bash <SKILL>/scripts/rotate-generation.sh --from <旧代> --to <新代> --dry-run` 先看计划，再去掉 `--dry-run` 真跑（见 references/generations.md） |
 | 路由回写（微信/QQ 续接） | `python <REPO>/tools/apply_routing.py` |
 | 桌面端收尾器 | `pwsh -NoProfile -File <REPO>/tools/finish_restore.ps1 -Repo <REPO>` |
@@ -259,9 +259,16 @@ metadata:
   所以 `--all` 会把用户刚删的每一会话原样灌回（实测一轮 `imported=2216`，与刚被删的 2,215 个一一对上）。四条执行纪律：
   ① `--all` 只给换机/灾难恢复用；日常恢复一律 `--source <只放目标 jsonl 的目录>`；
   ② 跑之前先算「镜像 id 集合 − 活库 id 集合」，把差额贴给用户确认——那些不是「缺失待补」，而很可能就是「他刚删的」；
-  ③ 真删的会话必须连带清镜像（删 jsonl 并 commit），否则镜像永远是恢复源，删多少次都能捞回来；顺序是
+  ③真删的会话必须连带清镜像（删 jsonl 并 commit），否则镜像永远是恢复源，删多少次都能捞回来；顺序是
   「等该会话的活跃租约结束（正在回答时删除会被 `exclude_active_write_guards` 拒掉）→ 删 → 跑一轮 sync
-  让 `prune_stale` 剪掉 `sessions/<档>/<sid>.part-*.jsonl` 并推送」，只删库不跑那一轮，下一次恢复照样复活；
+  让 `prune_stale` 剪掉 `sessions/<档>/<sid>.part-*.jsonl` 并推送」，只删库不跑那一轮，下一次恢复照样复活。
+  **恢复源不止镜像一处**：`restore_sessions.py --source <目录>` 指到哪，哪就是恢复源——别的会话做恢复演练
+  留下的 `temp/*/restore-src-*`、`migration-staging-*`、`hcb-*/src-main` 这类目录里同样躺着完整的 jsonl，
+  删完活库和镜像仍会被它们灌回（实测：删掉的会话「又回来了」，`started_at` 与原值逐位相同＝整条还原）。
+  判据：把活库 id 集合与**磁盘上所有** `<id>.jsonl`、`<id>.part-*.jsonl` 的文件名取交集，**交集为 0 才算删干净**；
+  逐份副本清还是留着由主人定（那些目录属于别的对话时按红线只报不动）。会话 id 三种形态都要认：
+  `YYYYMMDD_HHMMSS_hex`、`cron_<jobid>_<ts>`、`local-<64位hex>`（`source=local`）——按 id 写正则时漏掉第三种，
+  这些会话会在清点里凭空消失，删也删不到。
   ④ 归档（`archived=1`）不受影响——官方 import 见 id 已存在就跳过，所以「想让会话消失」的首选是归档不是硬删。
   删除/归档/租约侧的做法见另一个技能 `hermes-mechanics` 的会话库参考（L 篇）与其中的 `session-ctl.py`。
 - **网关计划任务不加"进程死了自动拉"**：官方任务无重启策略是设计；实测加 `TimeTrigger` 每 10 分钟拉一次会空烧
@@ -308,6 +315,7 @@ metadata:
 - **导出内存：整档渲染会 MemoryError，必须分块**：`render_sessions_export(全部会话)` 会把整档拼成一个字符串（main 约 1.6GB）；改成按**同一份 `sessions` 列表**切块（`CHUNK=4`）逐块写，输出与整档渲染逐字节等价（sha256 实测一致）。**不要**改成「按 id 逐个 `export_session()`」——`export_all()` 会对 `tool_names` 等字段做后处理（哈希），两者 sha256 不同。
 - **导出超时按「有没有进展」判，不按固定墙钟**：机器被别的活占满时同一轮导出能从 210s 涨到 1200s+（固定 20 分钟预算会掐死正在干活的导出，回退逐档 CLI 反而更慢）。改成每 30s 看**进程 IO**（不能看输出目录——整档渲染完才落盘，目录一直是空的），涨就续期，连续 1200s 不涨才杀整树，硬上限 3600s。
 - **私有性检查 fail-closed**：属主解析不到 / `gh` 不可用 / 查询失败 ⇒ **拒绝推送**（显式 `--allow-unverified-privacy` 才放行）；这个仓里是凭据与私人对话。
+- **`push` 报 `ERROR: Repository not found` 而 `ssh -T git@github.com` 认证正常 ⇒ 远端仓已被删或改名**，不是凭据/网络问题。判据：同 URL 的 `git ls-remote` 也报 not found，而 `Hi <user>!` 正常返回，两者并存即可定案。纯本机模式下这条 remote 本来就不用，`git remote remove origin` 即可收口；不要据此怀疑 token 失效、更不要重配凭据。
 - **恢复脚本必须经 `run_in_runtime.py`**：直接 `python restore_sessions.py` 会因缺运行期依赖报 `ModuleNotFoundError: ruamel`。
 - **恢复时「0 个会话」= 失败**（rc=2）：指错 `--source` 不该安静成功。
 - **导入成功 ≠ 能续接**：导入器不写 `session_key`/`chat_id`/`chat_type`/`origin_json`，平台因此认不出旧线程；
@@ -395,6 +403,10 @@ metadata:
 - **「镜像多会话」只警告，不判硬伤**（0.4.48）：子代理临时会话（`Subagent: …`）、人工删除、库回滚都会让镜像比活库多；
   这类是「备份比活库全」，不是备份缺陷——原先判硬伤会导致每次跑都 AUDIT-FAIL，把真信号淹没（2026-10-26 实测 5 个 `Subagent:` 会话）。
   现在 `AUDIT-PASS` 只由三种硬伤决定：镜像缺会话 / 镜像条数多于活库（错位或回滚）/ 会话文件解析失败；多会话单列「警告」并附例子。
+- **`AUDIT-SKIPPED` 是口径问题，不是备份缺陷。** 单档（只有 default）的机器上，镜像里仍躺着十几个退役档的会话目录，
+  而活库没有这些档 ⇒ 审计会把它们整批判成「活库缺失被跳过」，末尾不输出 `AUDIT-PASS` 而输出 `AUDIT-SKIPPED`
+  并附带档名列表。那是**扫描范围没限定**，不是“备份缺了 16 个档”：带 `--profile main` 重跑即 PASS。
+  反向判据：真缺陷的形态是 `main` 这一档里缺会话／条数错位／解析失败，与“哪个档根本不存在”无关。
 - **审计 PASS 必须与负向对照成对出现**：改了审计器或采集白名单后跑 `scripts/test-audit-coverage.py`（8 场景合成夹具，断言"该红的会红"）。只有 PASS 没有负向对照＝**没有证据**（审计可能根本没在看）；断言要落在输出字段（`缺 N`／`新建豁免 N`／`超前 N`），只断言退出码会把"因别的原因失败"误当通过。
 - **验收以「最后同步时刻」为界**：快照之后的新会话/改动不在备份里（属预期，下轮同步带上）。对账做三向差集——真机∩快照（应精确一致）、真机−快照（＝同步后新建）、快照−真机（＝曾删除；快照保留历史）；给用户解释时先讲这层边界，避免把预期差异当故障。
 - **时间锚点**：报「损失窗口/新鲜度」前先实测当前时间（`date`）并按当下重算——隔夜或隔数轮后旧读数的时间锚（如「今晚」）即失效，禁止沿用旧时点表述。

@@ -55,7 +55,7 @@ def run_commit_case(deleted, tracked):
     orig = (sync.MIRROR, sync.git, sync.ensure_repo, sync.purge_index_lock, sync.REMOTE_URL)
     try:
         sync.git = fake_git(deleted, tracked)
-        sync.ensure_repo = lambda: None
+        sync.ensure_repo = lambda *a, **k: None   # 2026-10-31: 新增 need_remote 关键字
         sync.purge_index_lock = lambda *a, **k: False
         sync.REMOTE_URL = "https://example.invalid/x.git"
         sync.commit_and_push("t", no_push=True)

@@ -143,6 +143,39 @@ def privacy_check(results: list) -> None:
     step("公开面卫生（凭据/隐私/路径）", rc, last, results)
 
 
+def preserve_check(repo: str, results: list) -> None:
+    """退役档（local.json 的 preserve_sessions）在镜像里必须还在。
+
+    2026-10-31 实案：16 个退役 bot 档的会话文件被「孤儿清理」删掉 1,339 个（1.2GB），
+    而这些档在 local.json 里明明是 preserve_sessions——清单只保护了 prune 路径，
+    保护不了别的清理工具。这里用**基线条数**（local.json 的 preserve_baseline）卡住：
+    任何一档的文件数少于基线 ⇒ 判红，附「从哪个提交取回」的提示。
+    """
+    cfg_path = ROOT / "local.json"
+    try:
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        step("退役档完整性", 2, f"读不到 local.json: {exc}", results)
+        return
+    base = cfg.get("preserve_baseline") or {}
+    if not base:
+        step("退役档完整性", 0, "未设 preserve_baseline（跳过）", results)
+        return
+    lost = []
+    for name, expect in sorted(base.items()):
+        out = subprocess.run(["git", "-C", repo, "ls-files", f"sessions/{name}"],
+                             capture_output=True, text=True)
+        cur = len([x for x in (out.stdout or "").splitlines() if x.strip()])
+        if cur < int(expect):
+            lost.append(f"{name} {cur}/{expect}")
+    if lost:
+        step("退役档完整性", 2,
+             f"{len(lost)} 档少于基线: {lost[:4]}（取回：git -C <镜像> checkout <提交> -- sessions/<档>）",
+             results)
+    else:
+        step("退役档完整性", 0, f"{len(base)} 档均不低于基线", results)
+
+
 def parts_check(repo: str, results: list) -> None:
     rc, last = run([PY, str(HERE / "check-parts.py"), "--repo", repo])
     step("镜像分片体检", rc, last, results)
@@ -172,6 +205,7 @@ def main() -> int:
     privacy_check(results)
     if a.repo:
         if Path(a.repo).is_dir():
+            preserve_check(a.repo, results)
             parts_check(a.repo, results)
             if a.audit:
                 home = a.home or str(Path.home() / "AppData" / "Local" / "hermes")

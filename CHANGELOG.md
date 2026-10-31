@@ -1,3 +1,13 @@
+## 1.1.4 — 2026-10-31 · 退役档完整性变成自检项（1,339 个会话被误删的教训）
+
+- 实案：镜像里 16 个退役 bot 档的会话文件被一次「孤儿清理」删掉 **1,339 个 / 1,203MB**
+  （`ceo 405→1`、`proj-82 245→4`、`proj-83 141→0`…），而 `local.json` 的 `preserve_sessions`
+  只保护了 `prune_stale` / `_deletable_profiles` 两条路径，保护不了**别的清理工具**。
+- 已从 git 历史（`0ef6b4f^`）原样取回 1,339 个文件并提交（`5ffbd9f`）。
+- 新增自检项 **「退役档完整性」**：`local.json` 记 `preserve_baseline`（每档基线条数），
+  `selfcheck --repo` 逐档比对，**任何一档少于基线即判红**，并直接给出取回命令。
+- `test-commit-guards.py` 的桩函数同步兼容 `ensure_repo(need_remote=…)`。
+
 ## 1.1.3 — 2026-10-31 · 纯本机模式不再碰 remote ＋ 运行副本回归"壳"
 
 - **`ensure_repo(need_remote=...)`**：纯本机模式（无 `--push`）**完全不碰 remote**——不再要求解析备份仓地址，

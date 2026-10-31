@@ -1,7 +1,7 @@
 ---
 name: hermes-backup
 description: Local git-mirror backup/restore of Hermes state (no cloud).
-version: 1.1.3
+version: 1.1.4
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -132,7 +132,7 @@ metadata:
 - `scripts/test-hb-sentinel.py` — 哨兵分支回归（（场景块 S1/S1b/S2–S9/S5b/S10/S11…，**别在文档里写死数量**）——①网关重启 / ②静默 5 分钟 / ④长静默恢复 / 新鲜度闸 / 锁跳过（活 pid vs 死 pid）/ 失败上报 / 冷启动两态 / 首轮失败重试；假 HERMES_HOME＋桩 sync.py，不碰真数据）。**别在文档里写死场景数**——加一个分支就得改三处，直接说「跑通即看末行『总判定：PASS』」
 - `scripts/test-hb-health.py` — 健康记账回归（sync.py 单一来源 + 包装"未跑完"补偿去重）
 - `scripts/test-audit-coverage.py` — 覆盖率审计的**负向对照**（8 场景合成夹具：全等 / 缺会话 / 多会话 / 镜像超前 / 镜像落后 / 轮内新建豁免 / 孤立组 / 坏 JSON；证明审计"该红就红"，不碰真库）
-- `scripts/selfcheck.py` — **一条命令全量自检**：编译 + 全部 `test-*.py` + 文档引用完整性 + **公开面卫生**（`privacy-scan`）＋（`--repo` 时）分片体检＋（`--audit` 时）会话层覆盖率审计；末行 `SELFCHECK-PASS/FAIL`，退出码 0/2。**只读**：不写镜像、不碰活库。有同步轮在跑时会先告警（自检抢磁盘会把那一轮拖成超时）
+- `scripts/selfcheck.py` — **一条命令全量自检**：编译 + 全部 `test-*.py` + 文档引用完整性 + **公开面卫生**（`privacy-scan`）＋（`--repo` 时）**退役档完整性**（`local.json` 的 `preserve_baseline` 基线条数，任何一档变少即判红——2026-10-31 实案：1,339 个退役档会话被外部清理删掉）＋（`--repo` 时）分片体检＋（`--audit` 时）会话层覆盖率审计；末行 `SELFCHECK-PASS/FAIL`，退出码 0/2。**只读**：不写镜像、不碰活库。有同步轮在跑时会先告警（自检抢磁盘会把那一轮拖成超时）
 - `scripts/privacy-scan.py` — **推前三道自检**（凭据文件 / 真实私人信息 / 本机绝对路径；`--repo <仓> --history` 连全历史扫）；命中退出码 2
 - `scripts/test-split.py` — 分片回归（合成 2MB/100MB/45MB 三条会话、阈值取 `sync.PART_MAX`）：断言每片≤阈值、片数＝ceil(字节/阈值)、按片名拼接后**小会话逐字节相同**、**>5MB 的会话语义等价**（`json.loads` 相同——它们会被尾部稳定化重排成员顺序，不能再用字节相等断言）
 - `scripts/test-layout.py` — 尾部稳定化的回归（6 项：语义等价 / 幂等 / 字段落尾 / 追加后 messages 前缀不变 / 40MB 性能 / 前半段＝KEEP_KEYS 且 messages 收尾）

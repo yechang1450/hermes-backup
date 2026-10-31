@@ -114,6 +114,8 @@ def main() -> int:
                           "violations": all_problems}, ensure_ascii=False, indent=2))
     else:
         print(f"分片阈值 {part_max} 字节（{part_max / 1048576:.1f}MB）；带分片会话 {total_groups} 个")
+        if total_groups == 0:
+            print("提示：0 个带分片会话——全是单体文件时属正常；若本该有巨会话，先确认采集是否漏档")
         if not all_problems:
             print("PARTS-OK 全部通过（P1 编号连续 / P2 固定边界 / P3 末片合规 / P4 无形态混用）")
         else:

@@ -20,7 +20,7 @@ ls "$HERMES_HOME/state/hb-sync-needs-attention" 2>/dev/null && cat "$HERMES_HOME
 ## 每周（2 分钟）
 
 ```bash
-python scripts/selfcheck.py --repo ~/hermes-backup            # 12 项：编译+9 套测试+文档引用+公开面卫生+分片体检
+python scripts/selfcheck.py --repo ~/hermes-backup            # 编译+全部 test-*.py+文档引用+公开面卫生+分片体检（项数以末行合计为准）
 python scripts/selfcheck.py --repo ~/hermes-backup --audit    # 再加会话层覆盖率审计（2–5 分钟）
 python scripts/churn-report.py --repo ~/hermes-backup  # 这一轮实际重写多少（形状是否合理）
 gh api repos/<owner>/<repo> --jq .size                  # 远端体积（判容量只认它）
@@ -34,14 +34,15 @@ git -C ~/hermes-backup ls-tree -r -l main | awk '{s+=$4} END {printf "%.2fGB\n",
 | `consecutive_failures` ≥1 | 上一轮真失败（先看 `last_error`） | 看 `state/hb-sync-child.log` 末尾 30 行；`database is locked`＝瞬时，等下一轮；`push` 超时＝网络，下一轮自愈 |
 | marker 存在（≥3 轮） | 连续失败，数据没坏但没上云 | 处理根因后删 marker，跑一轮 `python scripts/sync.py` 验证 |
 | `exit 3` + `connection closed by 198.18.*` | fake-ip 拦截（代理窗口） | 关掉代理或换 `ssh.github.com:443`；下一轮自愈 |
+| `exit 3` + `Failed to connect to github.com port 443`（连 21s 超时） | **`github.com:443` 这个端点不通，但 `api.github.com` 200** ⇒ 不是代理、不是凭据、不是仓库 | 把镜像 remote 换成官方备用端口：`git -C <镜像> remote set-url origin ssh://git@ssh.github.com:443/<owner>/<repo>.git`（先用 `git ls-remote` 该 URL 验通）；换完直接 `git push` 补推，未推的提交一直在本地，不会丢 |
 | 树体积增速 > 基线（约 9.2MB/小时） | 某个大文件在整份重写 | 跑 `churn-report.py`，看 `>5MB` 里是否同一会话多片 |
 | 一轮超 20 分钟还没结束 | 正常 250–650s；导出阶段按「进展」判——有进展会一直续期（硬上限 60 分钟），连续 20 分钟不涨才杀 | 看 `hb-sync-child.log` 停在哪步、`hb-bulk-export.log` 有无报错；**别在轮内跑 `selfcheck --audit` 或大测试** |
 | 分片末片 ≠ 固定边界 | 阈值/代码变了但数据没重切 | 跑一轮同步让边界归位；`check-parts.py` 复核 |
-| 远端 `.size` 接近 12GB | 该换代了 | 按 `references/generations.md` 跑 `rotate-generation.sh --dry-run` 再真跑 |
+| 远端 `.size` >8GB、常规轮 push >10 分钟、克隆 >15 分钟、历史占比 >20% | 该换代了 | 按 `references/generations.md` 跑 `rotate-generation.sh --dry-run` 再真跑 |
 
 ## 定期动作
 
-- **换代**：`.size` ≥ 12GB（或克隆 >20 分钟）→ `rotate-generation.sh --from <旧> --to <新>`（先 `--dry-run`）。
+- **换代**：判据只看 `references/generations.md` 的「触发条件」四条（`.size`/push 时长/克隆时长/历史占比），任一成立 → `rotate-generation.sh --from <旧> --to <新>`（先 `--dry-run`）。
 - **本地仓整理**：镜像 `.git` 已设 `gc.auto=0`；当 `git -C ~/hermes-backup count-objects -v` 的 `count` > 20,000 时，
   在**没有同步在跑**的空窗跑 `git -C ~/hermes-backup gc --quiet`。
 - **恢复演练**：每季度一次，按 `references/restore-drill.md` 走一遍（全新克隆 → 恢复一档 → 对账 0 差异）。

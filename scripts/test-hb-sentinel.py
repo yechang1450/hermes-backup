@@ -35,8 +35,8 @@ def make_home(name: str, *, gw_start="A", msg_age=3600.0, busy=False, fail_stub=
     shutil.rmtree(BASE / name, ignore_errors=True)   # 每个场景独立：清掉上一轮残留（含 state 文件）
     home = BASE / name / "home"
     (home / "state").mkdir(parents=True, exist_ok=True)
-    (home / "skills" / "hermes-cloud-backup" / "scripts").mkdir(parents=True, exist_ok=True)
-    stub = home / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
+    (home / "skills" / "hermes-backup" / "scripts").mkdir(parents=True, exist_ok=True)
+    stub = home / "skills" / "hermes-backup" / "scripts" / "sync.py"
     if guard_stub:
         stub.write_text('import sys\n'
                         'print("!! 疑似新机：活库 87 个会话 < 备份 3603 个的 50%")\n'

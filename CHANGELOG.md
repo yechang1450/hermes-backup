@@ -1,3 +1,75 @@
+## 1.1.0 — 2026-10-31 · 改名 hermes-backup ＋ 转纯本机线下备份
+
+主人令：`hermes-cloud-backup` 全量改名 `hermes-backup`；备份改为**只在本机**做，GitHub 上的**数据仓删除**，
+只保留技能源码仓并同步改名。
+
+- **改名**：技能目录 / frontmatter `name` / 全部文档与脚本字符串（63 处、29 个文件）/ `HERMES_HOME\scripts\`
+  运行副本的 `SYNC_SCRIPT` 路径 / 项目目录 `build/hermes-backup` 全部切换；旧名零残留（`.git` 内部除外）。
+- **转纯本机**：`sync.py` 默认**只 commit 到本地镜像、不推送**（新增 `--push` 才推，`--no-push` 保留兼容但已是默认）；
+  `local.json` 增 `mode: "local-only"`、`repo` 置空（防误推到**公开**的技能仓）。
+- **GitHub 收口**：gen-1（archived，4.5GB）先 `git clone --mirror` 落到
+  `temp/gen1-archive/gen1-hermes-backup.git`（63 提交）再删；gen-2 删前已证本地 `main/master/pre-395-takeover`
+  三个 ref 全在（本地 HEAD == 远端）；技能仓 `hermes-cloud-backup` → `hermes-backup`（仍 public）。
+- **内存硬闸**（新机 64GB 统一内存）：导出前查可用内存——**<3GB 跳过本轮（exit 2）**、**<8GB 退逐档 CLI**；
+  配合既有的分块渲染（`CHUNK=4`）与 stabilize 的 2.4× 守卫，杜绝整机 OOM。
+- **本机实测的一课**：`--allow-shrink` 是逃生口不是常规参数。新机第一轮曾把它当默认用，`sessions/main`
+  被砍 2,078→1,596 文件，39 个「只在镜像、从未提交」的会话文件永久丢失（本机单盘、无副本）。
+
+## 1.0.22 — 2026-10-31 · 退役 profile：从「会被清空」到「原样留档」
+
+新机只恢复 default 一档、16 个 bot 档全部退役后的真实事故。同一件事踩了两道闸：
+
+- **shrink guard 永久拒绝**：`_count_live_sessions` 对不存在的 `profiles/<name>/` 报 0
+  ⇒ 1522（活的）/ 3431（备份）= 44.3% < 50%，每轮 `exit 6`，镜像一个字节都推不上去。
+- **`_deletable_profiles` 判「可整档删」**：同样因为档目录整个不存在 ⇒ 放开闸就会把
+  17 个档 1909 个会话文件 `rmtree`，再撞批量删除闸（33.9% > 30%）⇒ 白跑一轮。
+- **`profiles-overlay` 被整层清空 8,284 个文件**（这一条最致命，且与上两条独立）：
+  `collect_profiles` 用「本轮访问过什么」反推该删什么，活库 0 档 ⇒ 什么都没访问 ⇒
+  全删。2026-10-31 18:52 实案：工作树 `profiles-overlay/` 变成 0 文件，靠
+  `git checkout -- .` 5 秒回滚；00:18 那轮同样是它，只因 gh 拒推才没提交。
+
+修法（三处，判据都只读 `local.json`，代码里不写死档名）：
+
+- `preserve_sessions` 新配置项：列出的档**不计入 shrink 分母、不参与整档删除判定、
+  prune 时原样保留**（历史仍按「镜像独有、可随时 `git show` 取回」）。`main` 不允许写进去。
+- `prune_unvisited(root, keep_paths=...)`：新增保留子树参数，用于护住退役档目录。
+- `collect_profiles`：活库 **0 档**且镜像非空时**整层跳过清理**并告警——「源侧没有」
+  在新机上不等于「该删」。这是与 shrink guard 同源的第二道零值保护。
+
+顺带：`_gh_exe()` 先看 PATH、再查官方安装位置（`%ProgramFiles%\GitHub CLI\gh.exe` 等）。
+从备份恢复只拷了 exe、没走安装器时 PATH 是空的，`shutil.which` 返回 None ⇒ `ensure_private`
+fail-closed 拒推（00:18 那轮正是被它救了，但也因此永远推不上去）。
+
+测试：`test-shrink-guard.py` 加 S7（退役档放行 + 不进可删档，6 项）；
+`test-prune-protect.py` 加 S5（keep 子树保留）、S6/S6b（零档整层保留、有活档时退役档仍在）。
+
+## 1.0.21 — 2026-10-31 · 两路审计后的静默失败清扫
+
+两路子代理只读审计（文档↔代码漂移 / 全新克隆可跑性 / 代码级静默失败 / 公开面卫生）后的一批修复。
+共同主题：**「打印成功」与「真的做了」之间的缝**。
+
+- `sync.py` 批量导出路径原本直接 `return`：某档 0 产出（`guard_zero_sessions` 已标 `ok=False`）
+  也照样走到「sync 完成」+ `exit 0`，包装器还会把失败计数清零 ⇒ 现在批量路径同样统计
+  `failed_profiles` 并按 `exit 5` 记账。
+- `sync.py` 提交前新增**批量删除闸**（`MassDeleteError`）：一轮里要删掉 ≥100 个且 >30% 的已跟踪文件
+  ⇒ 判误删、中止提交、`git reset` + `git checkout -- .` 把镜像回滚到 HEAD（未跟踪的新文件保留），`exit 6`。
+  这是对「任何一层被整批清掉」的兜底（会话闸只数会话）。
+- `sync.py` 整档删除授权收紧（`_deletable_profiles`）：只有**活库里连档目录都没了**才 `rmtree`；
+  `profile.yaml` 暂时缺失/改名的档一律保留（原逻辑会整档清掉）。
+- `sync.py` 采集阶段兜异常：`PermissionError`/磁盘满/库被锁原来直接 traceback，runs.jsonl、健康计数、meta 全不写
+  ⇒ 现在按 `exit 2` 记账。
+- `sync.py` 推送前校验分支必须是 `main`（否则提交到别支却 push main，`pushed=True` 而远端没变）。
+- `write_meta(..., success=False)`：失败轮与 `--collect-only` **不再写 `finished_at`**（它是「上次成功同步」
+  的唯一凭据，被覆盖会把哨兵的 20 分钟新鲜度闸与 overdue 判断一起重置）。
+- 静默失败清扫（各自都有「空集/拼错/坏文件仍报成功」的原缺陷）：
+  `audit-coverage.py`（0 档目录 ⇒ 硬伤；读不到采集白名单 ⇒ 硬伤）、`restore_files.py`（`--what` 拼错 ⇒ rc=2）、
+  `concat_sessions.py`（0 个会话 ⇒ rc=2）、`hb-sentinel.py`（锁文件解析不出 pid ⇒ 按陈旧锁）、
+  `selfcheck.py`（0 套测试 ⇒ 失败）、`export_all_profiles.py`（官方运行时改为**延迟导入**，`--help` 不再建骨架/等 33s）。
+- 新增 `scripts/test-commit-guards.py`（7 项：批量删除闸 4 + 整档删除授权 3，假 git 不碰真仓）。
+- 文档对齐：`ROTATE_AT_GB` 12→**8**（与 `generations.md`「触发条件」一致）、README 删掉与 `UNLICENSED` 矛盾的
+  `## License / MIT`、`--fast-import` 统一 2–4 倍、`restore_sessions --repo` 默认值描述改正、写死的「N 套/N 项/N 个场景」
+  改为指路、文件清单补 `check-paths.py`/`start-finish-restore.ps1`、`.gitignore` 加 `*.bak-*`。
+
 ## 1.0.20 — 2026-10-31 · 新机/未恢复保护（shrink guard）
 
 换新机后的一次真实事故倒逼出来的闸门：新装 Hermes 的活库只有 87 个会话，哨兵按 overdue 自动跑了一轮，
@@ -77,7 +149,7 @@
 
 - 更正 1.0.12 的归因（见下）并补实测：干净轮 485–496s、小文件写 C: 2,227/s vs D: 1,954/s。
 
-# CHANGELOG — hermes-cloud-backup
+# CHANGELOG — hermes-backup
 
 > 只记「用户会发现的变化」和「踩过的坑怎么修的」。每条后面跟版本号，便于 `git show` 回溯。
 
@@ -215,7 +287,7 @@ Windows 即 `C:\Users\<你>\...`），本版做适配：
 
 ## 1.0.1 — 2026-10-26
 
-- **孤儿导出回收的判据里硬编码了目录名** `hermes-cloud-backup`：换目录名安装/克隆时永远回收不到，
+- **孤儿导出回收的判据里硬编码了目录名** `hermes-backup`：换目录名安装/克隆时永远回收不到，
   孤儿会和下一轮抢同一批文件（连续两轮 3300s 超时的原始成因之一）。改为只认「参数里有
   `export_all_profiles.py` + 带 `--home/--out` + 父进程已死」——这正是**干净克隆实测**抓到的。
 - `test-reap-exporters` 加并发保护：常驻哨兵/其它测试可能抢在观察前把孤儿收掉（偶发 `find=[]`），

@@ -10,16 +10,29 @@ import argparse
 import sys
 from pathlib import Path
 
-from hermes_state import SessionDB, resolved_max_export_messages
-from hermes_cli.session_export import (SAVE_TRANSCRIPT_FORMATS,
-                                       export_projection,
-                                       render_sessions_export)
+# 官方运行时只在真要导出时导入：模块级 import 会在 HERMES_HOME 里建骨架，且 --help 也要 33 秒
+# （2026-10-31 审计实测）。
+def _imports():
+    from hermes_state import SessionDB, resolved_max_export_messages
+    from hermes_cli.session_export import (SAVE_TRANSCRIPT_FORMATS,
+                                           export_projection,
+                                           render_sessions_export)
+    return SessionDB, resolved_max_export_messages, SAVE_TRANSCRIPT_FORMATS, export_projection, render_sessions_export
 
 
 def export_one(name: str, db_path: Path, out_dir: Path) -> tuple[int, int]:
+    SessionDB, resolved_max_export_messages, SAVE_TRANSCRIPT_FORMATS, \
+        export_projection, render_sessions_export = _imports()
     db = SessionDB(db_path)
     # 复刻官方 `hermes sessions export` 的尺寸守卫（本项目配置 sessions.max_export_messages=0＝关闭）
-    limit = resolved_max_export_messages()
+    # 换机后实测：同一个脚本在 run_in_runtime 子进程里 resolved_max_export_messages() 会返回
+    # 20000（父进程里是 0）——两边解析到不同的配置上下文。所以允许用环境变量硬钉：
+    #   HB_MAX_EXPORT_MESSAGES=0  → 关闭尺寸闸（本机 48GB、且已分块渲染，峰值只有一个 chunk）
+    #   HB_MAX_EXPORT_MESSAGES=N  → 强制按 N 判
+    import os as _os
+    _force = _os.environ.get("HB_MAX_EXPORT_MESSAGES")
+    limit = int(_force) if _force not in (None, "") else resolved_max_export_messages()
+    print(f"[bulk-export] {name}: max_export_messages={limit}", flush=True)
     if limit:
         db.assert_exports_safe([s["id"] for s in db.search_sessions(source=None, limit=100000)],
                                max_messages=limit)

@@ -12,9 +12,12 @@
   S2 keep 为空 + 授权 gone ⇒ 只删 gone，其余保留
   S3 keep 含 p ⇒ p 目录保留、目录内多余文件被清
   S4 损坏的 .db ⇒ snapshot_sqlite 不递归、能落下文件（True）或明确 False，且耗时 < 2s
+  S5 prune_unvisited 的 keep_paths：保留子树原样不动，其余照常收敛
+  S6 collect_profiles：活库 0 档时整层保留（2026-10-31 实案：8,284 个 profile 文件被清空）
 """
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 import tempfile
@@ -75,8 +78,47 @@ def main() -> int:
     check("S4 坏库不递归、快速返回", dt < 2.0, f"{dt:.2f}s")
     check("S4 坏库回退后目标文件存在", (dst.exists() or not ok), f"ok={ok} exists={dst.exists()}")
 
+    # S5 prune_unvisited(keep_paths=...)：保留子树不被收敛
+    r5 = base / "s5"
+    (r5 / "a").mkdir(parents=True)
+    (r5 / "b").mkdir()
+    (r5 / "a" / "1.txt").write_text("x", encoding="utf-8")   # 本轮「访问过」
+    (r5 / "a" / "3.txt").write_text("x", encoding="utf-8")   # 未访问且不保
+    (r5 / "b" / "2.txt").write_text("x", encoding="utf-8")   # 未访问但在 keep 子树
+    old_copied = set(sync._COPIED)
+    sync._COPIED.clear()
+    sync._COPIED.add(str(r5 / "a" / "1.txt"))
+    sync.prune_unvisited(r5, keep_paths=[r5 / "b"])
+    check("S5 未访问且在 keep 外 ⇒ 删除", not (r5 / "a" / "3.txt").exists())
+    check("S5 keep 子树 ⇒ 原样保留", (r5 / "b" / "2.txt").exists())
+    check("S5 本轮访问过 ⇒ 保留", (r5 / "a" / "1.txt").exists())
+    sync._COPIED.clear()
+    sync._COPIED.update(old_copied)
+
+    # S6 collect_profiles：活库 0 档时不得清空 profiles-overlay
+    home6 = base / "home6"
+    (home6 / "profiles").mkdir(parents=True)                  # 空 profiles = 新机/全退役
+    mirror6 = base / "mirror6"
+    for f, body in (("config.yaml", "x: 1"), ("SOUL.md", "soul")):
+        d = mirror6 / "profiles-overlay" / "ceo"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f).write_text(body, encoding="utf-8")
+    old_m, old_h = sync.MIRROR, sync.HERMES_HOME
+    sync.MIRROR, sync.HERMES_HOME = mirror6, home6
+    sync.collect_profiles({})
+    n6 = sum(len(fs) for _, _, fs in os.walk(mirror6 / "profiles-overlay"))
+    check("S6 活库零档 ⇒ profiles-overlay 整层保留（2 文件）", n6 == 2, f"{n6} 文件")
+
+    # S6b 活库有档时，退役档仍被 keep_paths 护住、非退役档照常收敛
+    (home6 / "profiles" / "live").mkdir()
+    (home6 / "profiles" / "live" / "profile.yaml").write_text("name: live", encoding="utf-8")
+    sync.collect_profiles({})
+    n6b = sum(len(fs) for _, _, fs in os.walk(mirror6 / "profiles-overlay"))
+    check("S6b 有活档时退役档仍在（ceo 2 + live 1）", n6b >= 3, f"{n6b} 文件")
+    sync.MIRROR, sync.HERMES_HOME = old_m, old_h
+
     shutil.rmtree(base, ignore_errors=True)
-    print(f"\n== 5 项，失败 {fails} ==")
+    print(f"\n== {5 + 3 + 2} 项，失败 {fails} ==")
     return 0 if fails == 0 else 2
 
 

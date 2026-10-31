@@ -44,6 +44,10 @@ def main() -> int:
         elif n.endswith(".jsonl"):
             groups.setdefault(n[:-len(".jsonl")], []).append(p)
     files = sorted(groups.items())
+    if not files:
+        # 原来会打印「共 0 个会话 -> 1 个导入包（0.0MB）」并 rc=0（2026-10-31 审计发现）
+        print(f"!! {src} 里没有任何会话文件（.jsonl / .jsonl.gz / .part-NNNN.jsonl）——不是成功")
+        return 2
     part, written, total = 1, 0, 0
     fh = None
     try:

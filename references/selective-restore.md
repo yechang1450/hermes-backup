@@ -255,3 +255,163 @@ pragma quick_check;                                                             
 **说清边界**：这只是「不再续接旧线程」，**不等于通道已经能通**。通道能不能通要单独验（§7.3 / §7.3.1：
 `connected` + 无 `Unauthorized user` + 下一条消息真建出会话）。把「删干净」当成「修好了」会漏掉配对/网关那层。
 
+---
+
+## 8. 只挑一批「会话」恢复（旧机快照 → 新机）
+
+场景：用户只认某几条对话（典型：标题带 `@` 的项目会话），bot / 群聊 / 定时任务的记录一律不要。
+
+### 8.1 先验源覆盖度，再决定用哪个源
+
+备份仓的 `sessions/<档>/` 是**某一轮导出的产物，可能残缺**；本地留着的旧 `state.db` 反而常常更全。
+先把「用户点名的那批」在候选源里逐条对上号（数量 + 标题 + 消息数），再谈恢复：
+
+```bash
+# 逐会话读头部那行（分片先按 .part-NNNN 归组成一条）
+git -C <REPO> ls-tree -r HEAD sessions/main | awk '{print $3}' \
+  | python -c "…git cat-file --batch 逐条读、抓 id/title/message_count/source/cwd…"
+```
+
+实测坑：镜像导出里 desktop 会话的 `title` **大量为空**，只有少数几条带标题 ⇒ 按标题过滤会漏掉绝大部分；
+同机留下的旧库（schema 与目标版本相同）标题齐全、目标会话一条不少。实测那一例：镜像 2,202 个会话里
+只命中 4 个目标 `@` 会话，其余 13 个**根本不在**。
+⇒ **选源判据＝目标会话按 id 逐个命中 ＋ 标题完整 ＋ 表结构一致**，不是「谁更新」——
+旧库可能早一天，但它是原生的；镜像新一天却缺会话。
+
+另：`schema_version` 那个数字**不能当「原生」的判据**——它可能被人为改回旧值（把 32 改回 31 是常见收尾动作），
+而表里仍带着更新版本才有的列与守卫触发器。判结构一律比 `pragma table_info` 与 `sqlite_master` 的集合。
+
+### 8.2 挑哪一批：三层过滤
+
+1. **标题约定**：`title LIKE '@%'`（前缀匹配）。用包含匹配会把 `Subagent: … pkg@1.2` 这类误捞进来。
+2. **状态位**：排除 `archived=1`（归档＝用户已经不要）；`pinned=1` 随行自动带回，不用单独处理。
+3. **子代理闭包**：工具调用里存着 `parent_session_id` 引用，桌面端能点进去；只恢复父会话 ⇒ 这些引用全变死链。
+   取传递闭包（含孙代）：
+   ```python
+   keep = set(parents); frontier = set(parents)
+   while frontier:
+       q = ",".join("?" * len(frontier))
+       kids = {r[0] for r in c.execute(f"select id from sessions where parent_session_id in ({q})", tuple(frontier))}
+       frontier = kids - keep; keep |= kids
+   ```
+   实测一例：14 条父会话带出 **1,506 条**子代理会话（父 1.3 万条消息 vs 闭包 16.5 万条）——
+   **先把这个倍数报给用户**再让他决定，别默默搬。
+
+### 8.3 会话里引用的图在另一棵树里
+
+消息正文存的是绝对路径（`%APPDATA%\Hermes\composer-images\image_xxx.png`），文件**不在 `sessions/` 里**，
+而在 `desktop-overlay/composer-images/`。只搬会话 ⇒ 历史全成裂图。
+做法：**整目录全拷**（几百 MB，几秒；同名不覆盖），不要按引用清单挑——同一批会话用不同正则写法会
+算出相差一倍的引用数（实测 126–245 个），按清单挑必漏，而多拷几十张的代价是零。
+判据一句话：**文字完整 ≠ 对话完整**，带图的会话要连图一起搬；源里本来就没有的，如实报数。
+
+### 8.4 平台会话能不能续写：先比 session_key 与配对 id
+
+`@weixin` / `@qq` 这类会话恢复后能否继续吃新消息，只看 `sessions.session_key` 里的对端 id 与
+`<HERMES_HOME>/platforms/pairing/<平台>-approved.json` 的键是否一致：
+
+```sql
+select id, session_key, chat_id from sessions where title in ('@weixin','@qq');
+-- agent:main:weixin:dm:<openid> …
+```
+```bash
+cat "$HERMES_HOME/platforms/pairing/weixin-approved.json"   # 键里应含同一个 <openid>
+```
+
+一致 ⇒ 恢复后手机发一条就落回旧会话（这正是用户要的「联通后再恢复、恢复后能续写」）；
+不一致（换号 / 重新配对）⇒ 老会话永远收不到新消息，**先如实说明再动手**，别承诺「恢复完就能接着聊」。
+
+### 8.5 落库：就地合并，不要换库
+
+**先否掉「离线裁剪副本 → 换 state.db」这条路**（本文件上一版就是这么写的，实测被并行审稿否掉）：
+
+- 换库要停全部持库者。`hermes_state_holders.foreign_state_db_holders(<库>)` 实测至少两个：桌面后端的
+  `hermes serve` 与网关——**而执行者自己就跑在 `hermes serve` 的进程树里** ⇒ 停它＝杀掉执行者，
+  换库后半程（起服务、验收、回滚）没人做。
+- Windows 上 SQLite 不以 `FILE_SHARE_DELETE` 打开，rename/覆盖必 `sharing violation`；即使绕过，
+  源码有 `StateDbReplacedError` / `DeletedWalGenerationError` 会拒绝继续写（split-brain）。
+- 换库换不来「更纯」：备份库哪怕 `schema_version` 写着旧值，也可能带着更新版本才有的列与守卫触发器
+  （历史上有人手工把 32 改回 31）⇒ 判「原生」要看表/列/触发器集合，别信那个数字。
+
+**正确做法＝把源库 ATTACH 进来，只向活库 INSERT 目标会话**（不停服务、不动文件、回滚＝删插入的行）：
+
+```python
+con = sqlite3.connect(dst, uri=True, isolation_level=None)          # 活库
+con.execute("PRAGMA busy_timeout=60000"); con.execute("PRAGMA foreign_keys=ON")
+con.execute("ATTACH DATABASE ? AS bak", (f"file:{src}?mode=ro",))  # 源库只读
+```
+
+五条硬约束，缺一条就报错或写坏：
+
+1. **显式列名**：两库列集合可能完全相同、但**物理顺序不同**（新版本把若干列前移）。`INSERT … SELECT *`
+   会静默错列，`_reconcile_columns()` 只加列、救不了错位。
+2. **`messages` 不带 `id`**：那是 `INTEGER PRIMARY KEY AUTOINCREMENT`，源库已用到几十万，带过来必撞主键。
+   让 SQLite 重新发号，其余列（`message_uid` / `display_order` / `display_identity`）原样保留——
+   display_order 留 NULL 时插入触发器会按新 id 重写，只影响不可见行，但没必要。
+3. **先插 `system_prompts`，再插 `sessions`**：`sessions.system_prompt_hash` 有外键指向
+   `system_prompts(hash)`；源库里被引用的 hash 目标库通常一条都没有（实测 81 个全缺）。
+4. **父会话先于子会话**：`sessions.parent_session_id` 自引用外键，按「根在前」排序再插。
+5. **`sessions.title` 有唯一部分索引**（`WHERE title IS NOT NULL`）：插入前按**本次要插的那些 id**
+   查重名——别对整批查，续跑时会把已经插进去的自己当成冲突。
+
+**锁窗口必须切碎。** Hermes 的写连接是 `timeout=1.0`（拿不到锁就失败、应用层重试），一个会话一个事务时
+最大的那条有七万多行、锁两分半，直接把正在跑的对话掐断。同一份 35 万行数据的三次对照：
+
+| 做法 | 总耗时 | 最长写锁 |
+|---|---|---|
+| 抑制 FTS 触发器 + 末尾整表 rebuild | ~3 分钟 | **~2 分钟**（rebuild 单语句全程持锁） |
+| 整会话一个事务 | 3 分 14 秒 | **~150 秒** |
+| **3000 行/事务 ＋ 断点续跑** | **~3 分钟** | **~3 秒** ✅ |
+
+断点续跑靠一张进度表：`CREATE TABLE zz_merge_progress(session_id TEXT PRIMARY KEY, last_src_id INTEGER)`，
+每块插完写回块内最大源 id，重跑时 `WHERE id > last_src_id` 接着来；**收尾 `DROP TABLE`**。
+后台跑必须带 `persist_on_release`（普通后台进程随回合结束被杀）。
+
+**验收 SQL 套件**（每次合并后全跑，任一不过就是没成功）：
+
+```sql
+select count(*) from sessions;                        -- 目标数 = 恢复数 + 已有数
+select count(*) from messages;                        -- 行数（含 active=0 的归档行）
+select count(*) from messages where active=1;         -- 可见条数
+select count(*) from messages_fts;                    -- 必须等于 messages 行数
+select count(*) from messages_fts_trigram;            -- 子集（只索引非 tool、非 cron/subagent）
+pragma foreign_key_check;                             -- 必须 0 行
+pragma quick_check;                                   -- ok
+select count(*) from messages m where not exists(select 1 from sessions s where s.id=m.session_id);  -- 0
+select count(*) from sessions s where s.message_count <> (select count(*) from messages m where m.session_id=s.id and m.active=1);  -- 0
+```
+
+- **`hermes sessions stats` 的 `Total messages` 是 `count(*)`（含归档行），不是 `message_count`**；
+  `sessions.message_count` 只算 `active=1`，两个数能差一倍以上（实测 354,776 行 / 165,199 可见）。
+  验收口径写错会把成功判成失败。
+- **trigram 搜索的查询词必须 ≥3 个字**（`分镜头` 命中、`分镜` 恒 0）——拿两字词验 trigram 会误判成索引坏了。
+
+### 8.6 平台路由要回指，不只是 `session_key`
+
+活库的 `gateway_routing` 可能已经有一行同 `session_key` 的记录、却指向**一条已不存在的会话**
+（平台重连时建过又删掉的），光靠 `session_key` 不会自愈到旧会话。合并后按 `session_key` 把
+`entry_json.session_id` 改成恢复出来的那条，并清掉重置痕迹：
+
+```python
+d = json.loads(entry_json)
+d.update(session_id=new_sid, prev_session_id=None, is_fresh_reset=False,
+         reset_had_activity=False, resume_pending=False, resume_reason=None,
+         was_auto_reset=False, updated_at=time.time())
+```
+
+判据：`json_extract(entry_json,'$.session_id')` 能在 `sessions` 里查到；再让手机发一条，看落点是不是旧会话。
+
+### 8.7 收尾：路径、删除闸与两个上限
+
+- **`cwd` 与 `git_repo_root` 一起改**：旧机的 `D:\workspace` 在新机不存在，只改 `cwd` 会让 git 上下文指向死盘。
+- **删会话可能被守卫触发器拦住**：`sessions_runtime_ledger_delete_guard` 对 `session_admissions` /
+  `worker_executions` 里有行的会话 `RAISE(ABORT, '… Downgrading is unsupported …')`。要删就先把那两张表里
+  该会话的行删掉（先备份库），再 `hermes sessions delete <id> --yes`；删完 `quick_check` 复核。
+- **`sessions.max_resume_messages` 默认 20000**（按 `active+compacted` 的可显示行算）：超了就打不开，
+  报「too long to reload」。恢复完先量哪些超了（命令行侧用 `SessionDB.assert_resume_safe(sid)` 离线判定），
+  再决定要不要 `hermes config set sessions.max_resume_messages 0`（改配置 ⇒ 需授权）。
+
+源库全程只读、活库先按 `<库>.bak-pre-merge-<时间>` 留一致性快照（用 `sqlite3.Connection.backup()`，
+不要 `cp`——WAL 里的提交会丢）。失败回滚＝删掉插入的那批 session id。
+
+

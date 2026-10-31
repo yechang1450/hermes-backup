@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hb-autosync.py — hermes-cloud-backup 周期同步（四机制之 ③：每 2 小时）。
+"""hb-autosync.py — hermes-backup 周期同步（四机制之 ③：每 2 小时）。
 
 由 Hermes 官方 cron 调用（--no-agent 纯脚本）。成功＝空输出（静默）；
 失败输出摘要（会被 cron 投递）。若距上次实际同步 <20 分钟则静默跳过（去重）。
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -16,7 +17,7 @@ from pathlib import Path
 
 LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
 HOME = Path(os.environ.get("HERMES_HOME") or (LOCALAPPDATA / "hermes"))
-SYNC_SCRIPT = HOME / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
+SYNC_SCRIPT = HOME / "skills" / "hermes-backup" / "scripts" / "sync.py"
 MIN_SYNC_GAP = 20 * 60
 SYNC_TIMEOUT = 5400   # 外层兜底：collect+export+commit 最坏 ~1900s，推送预算 1500s
 CHILD_LOG = HOME / "state" / "hb-sync-child.log"
@@ -184,6 +185,15 @@ def git_env() -> dict:
         cands = sorted(p for p in tools.glob("git-*") if (p / "cmd" / "git.exe").is_file())
         if cands:
             env["PATH"] = str(cands[-1] / "cmd") + os.pathsep + env.get("PATH", "")
+    # gh：sync.py 的私有性校验要用它；cron 环境的 PATH 往往没有它（换机实测：gh 装了但不在 PATH，
+    # 于是每一轮都在「gh 不可用，拒绝推送」上静默失败）。标准安装位探测一次，别写死用户名。
+    if not shutil.which("gh", path=env.get("PATH", "")):
+        for c in (Path(r"C:\Program Files\GitHub CLI"),
+                  Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "GitHub CLI",
+                  Path(os.environ.get("LOCALAPPDATA", "")) / r"Programs\GitHub CLI"):
+            if (c / "gh.exe").is_file():
+                env["PATH"] = str(c) + os.pathsep + env.get("PATH", "")
+                break
     return env
 
 

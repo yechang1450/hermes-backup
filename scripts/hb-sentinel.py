@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hb-sentinel.py — hermes-cloud-backup 自动同步哨兵（watchdog）。
+"""hb-sentinel.py — hermes-backup 自动同步哨兵（watchdog）。
 
 由 Hermes 官方 cron 每 2 分钟调用（--no-agent 纯脚本、不过模型零 token）。
 职责 = 四机制之 ①②④：
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -33,7 +34,7 @@ LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" /
 HOME = Path(os.environ.get("HERMES_HOME") or (LOCALAPPDATA / "hermes"))
 STATE_FILE = HOME / "state" / "hb-sentinel-state.json"
 SYNC_LOCK = HOME / "state" / "hermes-backup-sync.lock"
-SYNC_SCRIPT = HOME / "skills" / "hermes-cloud-backup" / "scripts" / "sync.py"
+SYNC_SCRIPT = HOME / "skills" / "hermes-backup" / "scripts" / "sync.py"
 
 QUIET_SECONDS = 300          # ② 静默阈值：5 分钟（按全库最后一条消息计时）
 LONG_QUIET_SECONDS = 3600    # ④ 长静默阈值：1 小时
@@ -90,6 +91,48 @@ def mirror_meta() -> Path:
 SYNC_STATE = mirror_meta()
 
 
+def _pid_alive(pid: int) -> bool:
+    """进程是否还活着——**不依赖 psutil**。
+
+    为什么必须自带一份（2026-10-31 冷机审计）：原实现是
+    `import psutil ... except Exception: return True`，在没装 psutil 的机器上
+    （Hermes 自带的 tools python 默认就没有）一律当成「锁还活着」⇒
+    崩溃残留的锁会永久静默挡住哨兵，正好是这个函数要修的病。
+    Windows 用 OpenProcess+GetExitCodeProcess，POSIX 用 os.kill(pid, 0)。
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            QUERY = 0x1000          # PROCESS_QUERY_LIMITED_INFORMATION
+            SYNC = 0x00100000       # SYNCHRONIZE
+            STILL_ACTIVE = 259
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            h = k32.OpenProcess(QUERY | SYNC, False, int(pid))
+            if not h:
+                return False        # 打不开＝进程不存在或无权（无权按死处理，宁可重跑）
+            try:
+                code = wintypes.DWORD()
+                if k32.GetExitCodeProcess(h, ctypes.byref(code)):
+                    return code.value == STILL_ACTIVE
+                return True
+            finally:
+                k32.CloseHandle(h)
+        except Exception:           # noqa: BLE001
+            return True             # 探针本身出错时保守：当作还活着
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
 def lock_is_live() -> bool:
     """同步锁是否真的有人持有：文件存在但持有进程已死 ⇒ 视为没在跑。
 
@@ -104,14 +147,18 @@ def lock_is_live() -> bool:
     try:
         pid = int(json.loads(txt)["pid"]) if txt.startswith("{") else int(txt)
     except Exception:
-        return True          # 读不懂就当它在跑（保守，宁可少跑一轮）
+        # 0 字节 / 写到一半的锁解析不出 pid。原来「读不懂就当它在跑」——独装哨兵时会永久卡住，
+        # 而且 rc=0 完全看不出问题（2026-10-31 审计发现）。按陈旧锁处理，并在下次失败投递里留痕。
+        note("!! 同步锁文件解析不出 pid（%d 字节），按陈旧锁处理：%r" % (len(txt), txt[:40]))
+        return False
     if pid <= 0:
-        return True
+        note("!! 同步锁 pid<=0（%r），按陈旧锁处理" % txt[:40])
+        return False
     try:
         import psutil
         return bool(psutil.pid_exists(pid))
-    except Exception:
-        return True
+    except Exception:               # noqa: BLE001  没装 psutil 也要能判活
+        return _pid_alive(pid)
 
 
 def load_state() -> dict:
@@ -135,6 +182,15 @@ def git_env() -> dict:
         cands = sorted(p for p in tools.glob("git-*") if (p / "cmd" / "git.exe").is_file())
         if cands:
             env["PATH"] = str(cands[-1] / "cmd") + os.pathsep + env.get("PATH", "")
+    # gh：sync.py 的私有性校验要用它；cron 环境的 PATH 往往没有它（换机实测：gh 装了但不在 PATH，
+    # 于是每一轮都在「gh 不可用，拒绝推送」上静默失败）。标准安装位探测一次，别写死用户名。
+    if not shutil.which("gh", path=env.get("PATH", "")):
+        for c in (Path(r"C:\Program Files\GitHub CLI"),
+                  Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")) / "GitHub CLI",
+                  Path(os.environ.get("LOCALAPPDATA", "")) / r"Programs\GitHub CLI"):
+            if (c / "gh.exe").is_file():
+                env["PATH"] = str(c) + os.pathsep + env.get("PATH", "")
+                break
     return env
 
 

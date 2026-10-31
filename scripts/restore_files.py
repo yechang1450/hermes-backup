@@ -97,6 +97,12 @@ def main() -> int:
         print(f"⚠ 目标目录不像 Hermes home（无 hermes-agent/config.yaml/memories）: {home}")
 
     backup = None if (a.no_backup or a.dry_run) else repo / "restore-out" / "pre-restore-backup"
+    _allowed = {"home", "profiles"}
+    _bad = [w for w in (x.strip() for x in a.what.split(",")) if w and w not in _allowed]
+    if _bad:
+        # 拼错层名原来会「0 个文件 + rc=0」——看起来恢复成功，其实什么都没做（2026-10-31 审计发现）
+        print(f"!! --what 里有未知层名 {_bad}（只认 home / profiles）")
+        return 2
     what = [w.strip() for w in a.what.split(",") if w.strip()]
     files = backed = failed = 0
     tag = "[dry-run] " if a.dry_run else ""

@@ -67,3 +67,35 @@ gh api repos/<owner>/<repo> --jq .size                  # 远端体积（KB）
 3. 旧副本 HEAD 与 reflog 时间戳在观察窗内不动（新镜像已推进 ≥1 轮）。
 
 缺第 3 条＝可能双写；缺第 2 条＝只证明了「能同步」，没证明「能恢复」。
+
+## E. 点火前三项体检（目录都在 ≠ 链路通）
+
+镜像、技能、脚本三样都在，也可能照样跑不起来。按顺序核这三件，每件都有过实案：
+
+1. **`local.json` 指的镜像必须存在、且是 git 仓**。它可能还写着上一轮「换代」中间态的名字（`~/hermes-backup-<型号>` 之类），而那个目录要么不存在，要么只是一个**没有 `.git` 的半成品拷贝**（体积约为真镜像的 1/7）。判据：
+   ```bash
+   python -c "import json,pathlib;d=json.load(open(r'<技能>/local.json'));print(d['mirror'], pathlib.Path(d['mirror'],'.git').exists(), d['repo'])"
+   ```
+   半成品目录不要就地「补 git init」——直接指回真正在用的那一代（镜像已有 origin 时仓名以 origin 为准）。
+2. **仓名必须在 GitHub 上真实存在**：`gh repo list <owner> --json name,visibility --jq '.[]|select(.name|test("hermes-backup"))'`。`repo` 写着上次尝试留下的名字时，`--create-remote` 会去建一个**新的空仓**，等于把历史切断。
+3. **cron 任务「在册」≠「在跑」**：`jobs.json` 里两条任务都在、`script` 也在，但 `enabled: false` 时 ticker 根本不点火（脚本、镜像、脚本副本全绿，就是没人调度）。判据不是 `cron list` 的 Last Run，而是**该 job_id 在 `executions.db` 的最后一行时间 vs 现在**：
+   ```bash
+   sqlite3 "<HERMES_HOME>/cron/executions.db" \
+     "select job_id,status,started_at from executions where job_id='<id>' order by rowid desc limit 3"
+   ```
+   最后一条是几分钟前＝在跳；几小时／几天前＝已停。修完先手工点一轮，再用**新一轮** `executions.db` 行作证（脚本能跑、`cron run` 成功都不等于 ticker 在工作）。
+
+点火前的活库侧预检（避免撞保护闸白跑一轮）：活库会话数 vs `sessions/main/*.jsonl` 数——活库 < 备份 50% 会触发 shrink guard `exit 6`；新机 `profiles/` 目录**存在但为空**属正常，退役档靠 `local.json` 的 `preserve_sessions` 兜住，不要因此加 `--allow-shrink`。
+
+## F. 扫「还有谁写死旧盘」：逐仓 `git grep`，别用 `rg` 扫整棵树
+
+换地址后最耗时的一步不是搬数据，是找出还有谁写死旧路径。两种做法实测差两个数量级：
+
+| 做法 | 实测 |
+|---|---|
+| `rg '<旧盘>' <整个工作区>` | 在刚迁移完、文件缓存全冷的盘上**跑不完**：撞 300s 工具超时（连执行内核一起被杀），或让子代理卡在 442s 只发出 1 个调用 |
+| 每仓一次 `git grep -nI -e ...` | 18 个仓 **74 秒**跑完，最慢单仓 0.4 秒 |
+
+要点：①只扫**已跟踪文件**（`git grep` 天生如此，未跟踪的本来不算账）；②**单仓 60 秒超时**，超时记「未扫完」继续下一个，不重试；③**边跑边 append 写盘**，别攒到最后一次性写（被打断就全丢）；④报告把「代码/脚本」与「文档」分开——真会出事的是 `.py/.ps1/.rs/.gd/.sh/.cfg`，`.md` 里多半是历史记录，不必改。
+
+跨盘复制过来的 Rust `target/` 会带着旧盘的绝对路径，`cargo test` 直接 rc=101（`couldn't find file …/target/debug/build/…/private.rs`）——**清掉重建**（`cargo clean`），别改 `.cargo/config` 或环境变量去迁就它。同理，判断「迁移后某仓是否干净」不能看 `target/` 在不在，要看重建后测试是否全绿。

@@ -218,7 +218,7 @@ def main() -> int:
     ap.add_argument("--profile", default="main", help="main 或档名")
     ap.add_argument("--all", action="store_true", help="恢复 sessions/ 下全部档")
     ap.add_argument("--source", default="", help="会话文件目录（默认用仓库的 sessions/）")
-    ap.add_argument("--repo", default="", help="仓库根（默认=本脚本上一级）")
+    ap.add_argument("--repo", default="", help="仓库根（默认=本脚本所在目录的上一级，即 <repo>/tools/ 的父目录）")
     ap.add_argument("--strict-caps", action="store_true",
                     help="不放宽官方导入尺寸上限（默认放宽；恢复完整历史所需）")
     ap.add_argument("--fast-import", action="store_true",

@@ -1,4 +1,4 @@
-# Pitfalls — 实战坑清单（hermes-cloud-backup）
+# Pitfalls — 实战坑清单（hermes-backup）
 
 > 由 `SKILL.md` 的 Pitfalls 段拆出。每条都是实机踩过并修复过的，带版本号与判据；排查时按主题找，别整篇通读。
 > **条数随修随增——本文件不写死总数（也不要在 SKILL/README 里写死），只维护下面的分类目录。**
@@ -64,7 +64,7 @@
     会让批量导出静默退化，比正常慢 3–5 倍；现已打印 `!! 批量导出不可用（缺 …）`）；
   · `HERMES_HOME/scripts/` 只需 `hb-sentinel.py` + `hb-autosync.py`；若那里也放了一份 `sync.py`，**它必须是转调壳**而不是副本
     （2026-10-26 实案：副本缺 helper，手动轮走慢路径而 cron 正常，很难发现）。
-  · 自查：`python "$HERMES_HOME/scripts/sync.py" --help` 能出 usage；`ls "$HERMES_HOME/skills/hermes-cloud-backup/scripts/export_all_profiles.py"` 存在。
+  · 自查：`python "$HERMES_HOME/scripts/sync.py" --help` 能出 usage；`ls "$HERMES_HOME/skills/hermes-backup/scripts/export_all_profiles.py"` 存在。
 
 - **整档删除必须显式授权**（0.4.49，2026-10-26 代码审查发现）：`prune_stale` 原实现「keep 里没有的档就 rmtree」——
   某档导出失败/零产出时会把它**整档历史清掉**再 commit+push。现在签名是 `prune_stale(root, keep, allow_delete=…)`，
@@ -76,6 +76,28 @@
   ①`guard_zero_sessions()`——0 会话、而该档历史上已有文件 ⇒ 判失败、旧文件全部进 `keep`、本轮不 prune；
   ②任一档失败 ⇒ 其它档照常提交推送，但本轮记 **`exit 5`**（进健康计数，连续 3 轮触发 needs-attention）。
   回归＝`test-zero-session.py`（5 项，含「空档不误判」与「有产出不干预」）。**铁律：`rc=0` + 0 产出 ≠ 成功，先问「它本来有没有东西」。**
+
+
+
+- **「按本轮访问过什么」反推该删什么，源侧合法为空时会把整层删光**（1.0.22 实案）：`prune_unvisited()` 拿全局 `_COPIED`
+
+  判「本轮没访问过 ⇒ 是残留」。于是**源侧为空**（新机未恢复、档已退役、目录整个不存在）时，镜像那一层会被清空，然后照常
+
+  commit + push——不报错、不退出、日志只有一句「清理 N 个残留」。两层同形：①`collect_profiles` 在活库 0 档时把
+
+  `profiles-overlay/` 8,284 个文件全删；②`collect_home` / `collect_desktop` 至今**没有**零值短路，只是靠「本机总还有
+
+  config.yaml 之类」才没炸。已修两处：`preserve_sessions` 列出的档进 `keep_paths` 原样保留；`collect_profiles` 在
+
+  `names` 为空且镜像非空时**整层跳过**，打印 `profiles: 活库 0 档 —— 整层保留现有 N 个文件不清理`。
+
+  **看到这行是正常，不是异常。** 给另外两层加同类保护时照抄这个形状：**先算源侧条目数，为 0 且镜像非空 ⇒ 不 prune、
+
+  打一行日志、直接返回**；这一步必须排在 `prune_unvisited()` 之前，排在后面等于没加。
+
+  另：`profiles/` 整个不存在既可能是「只有 default 一档的新机」，也可能是「档被彻底删了」——两者对备份的含义相反，
+
+  前者要保、后者才该删，所以退役档必须显式列进 `preserve_sessions`，不靠代码猜。
 
 - **快照回退不能回到 copy_file**（0.4.49）：`copy_file` 对 `.db` 分支进 `snapshot_sqlite`，而快照失败又回退 `copy_file` ⇒ 互递归
   （实测喂坏库递归到深层后返回 False、目标文件根本没写）。回退改为 `shutil.copy2 + os.replace`。回归＝`test-prune-protect.py` S4（0.03s、文件落地）。
@@ -175,6 +197,11 @@
   `sync._record_health()` 同样**不把 exit 6 计入连续失败**（既不增也不清零）——它是「本机还没恢复」的
   配置状态，不是机制故障，计进失败会让 needs-attention 被噪声触发。闸门位置在建目录之前：
   连 `meta/sync-state.json` 都不写，否则哨兵会以为刚同步过（`finished_at` 新鲜 20 分钟）而掩盖真信号。
+  **工作树已被误 prune 的抢救**：`git status --porcelain | awk '{print $1}' | sort | uniq -c` 看到成片 `D`（外加一堆 `??`）就是它；
+  `git restore -- .` 从 HEAD 全量复原——本地即便是 `--depth 1` 的浅克隆也够（HEAD 树完整），复原后文件数应等于 `git ls-tree -r HEAD | wc -l`，
+  再 `git status` 确认只剩本机新增的未跟踪文件。**未提交的 prune 不可怕，已提交才可怕**：所以发现后第一件事是复原、第二件事是确认那轮没落 commit（`git log --oneline -1` 的提交信息时间对不上就是没落）。
+  **验收闸门别只看退出码**：造一个 >2× 活库的假镜像，跑 `sync.py --mirror <假镜像>`，断言 rc=6 **且路径集合零变化**
+  （前后各 `sorted(p.relative_to(fake).as_posix() for p in fake.rglob('*'))` 比对；顺带断言 `meta/`、`logs/` 都没被建出来）。
 
 - **恢复要带 `--verify`**（0.4.22）：`restore_sessions.py --fast-import --verify` 会在导入后**逐会话**把「镜像里的消息条数」与「恢复库里的行数」对齐，不一致就打印明细并让退出码=3。以前演练靠人肉比对（我手动抽 7 个会话），现在一条命令出结论；实测 mentoragent 11/638 「不一致 0 个」。
 
@@ -210,6 +237,20 @@
 
 - **哨兵与周期入口的单轮超时统一 3900s**（0.4.50）：哨兵原写 3300s，与文档/autosync 的 3900s 不一致。
 
+- **发现某轮正在破坏镜像时，止损顺序＝「停触发器 → 复原工作树 → 再查根因」**（1.0.22）：
+
+  ①先 `hermes cron pause <哨兵 job id>`——哨兵每 2 分钟一跳，不停它就会在修复窗口里再挨一轮，每轮都重新制造一次破坏；
+
+  ②`git -C <镜像> restore -- .`（`checkout -- .` 同效）把**已跟踪**文件全数复原，未跟踪的新文件不受影响——
+
+  复原后 `git status` 只应剩 `??`，这是「还原成功、没覆盖本机新增」的判据；③然后才去改采集/prune 代码。
+
+  **停 cron 是止血不是改配置**：`hermes cron pause/resume` 只动那一支定时任务，不碰 `hermes serve` 桌面端、不碰网关、
+
+  不碰任何 config 文件，做完报告即可。**恢复时注意补跑语义**：`hermes cron resume` 之后若 `Next run` 是过去时刻，
+
+  它会在下一个 tick **立刻补跑一轮**（`catch_up_missed` 默认开）——别把那轮当成「又出问题了」。
+
 - **重启网关会连坐当前对话**：`hermes gateway restart` 由收尾器在桌面端关闭后执行，不要在对话中途手动跑。
 
 ## 其它
@@ -232,6 +273,24 @@
 - **并发时给手工作业也挂锁**：手工跑 push/repack/换代这类会写镜像的活时，手写一份 `state/hermes-backup-sync.lock`（含自己的 pid），
   让 cron 轮看到「已有同步在跑」而让路；完事再删。否则哨兵的轮次会和手工 push 抢同一个仓（ref 锁冲突 / 互相拖慢）。
 
+
+
+- **判「这个锁/进程是谁的」要走父进程链，别按「我没起过」就归给别的会话**（1.0.22）：`psutil.Process(pid)` 一路
+
+  `.parent()` 打上去，链尾就能定性——落在 `hermes serve` 上是**桌面后端**（即另一个对话在跑），落在一层
+
+  `bash -lic` 里且带 `export PATH=… && cd <技能目录>` 上是子代理或人工终端。实测有子代理把「自己同一批派出的第三个
+
+  子代理」报成「另有一路会话在跑」，这句话差点进了给用户的汇报——**先看链再下结论**。反向同样成立：看到不属于自己的
+
+  进程一律**不杀**，它多半是同一批派发里的兄弟，杀了就断掉自己那条链的结果。
+
+- **同一份技能可能被多个会话同时跑**：镜像、锁、`local.json` 全局共享，两边各自的轮次会用**同一个锁互斥让路**（安全），
+
+  但也会互相改写配置与镜像。动手前先看锁与进程链，写路径一律显式传参（见上条 `--mirror`），改代码前重读当前文件
+
+  （对方可能已经改过）——这是本技能维护笔记⑥在运行侧的同一条约束。
+
 - **子代理会把 `HERMES_HOME`/`TEMP` 泄漏到共享 shell**：Hermes 终端是共享快照，子代理 `export` 的环境变量会留在里面。
   实测：某子代理把 `HERMES_HOME` 指到它的沙箱后，后续 `audit-coverage.py --profile X` 对着**假 home** 跑、报「跳过」并 rc=2；
   `TEMP=/tmp` 还会让 Node 的临时目录解析错位。收工/换手前先 `echo $HERMES_HOME` 核对；一切写操作都用**显式 `--home`**。
@@ -244,6 +303,12 @@
   直接说「缺分片 [2]」。
 - **fast-import 的触发器还原要放 `finally`**（0.4.64）：重建过程中途抛错（库被占用很常见）会让 display/FTS 触发器永久缺失，
   之后所有消息都不再进索引且没人知道。
+
+- **长跑轮一律显式传 `--mirror`，别依赖 `local.json`**（1.0.22，2026-10-31 实案）：同一份技能目录可能被两路
+  同时使用（另一路在给新机建 `hermes-backup-395`），它把 `local.json` 的 `mirror`/`repo` 改成自己的，
+  我这边 18:54 起的一轮就读到了 395、导出 2.2GB 到错目录，最后只因 395 仓不存在被私有性检查拦住（`exit 4`）。
+  **判「这一轮跑的到底是哪个仓」只认日志第一行 `解析：mirror=… remote=…`**，不要凭 `local.json` 现在的内容推断。
+  同理：报告同步结果前先核这一行，否则会把「跑错地方」当成「跑成功」。
 
 - **同步轮期间跑重活，会把一轮从 500s 拉到 2700s**（2026-10-29 实案）：同一天里干净轮 **485s / 496s**，
   而撞上 `git reset --hard`（3.4GB）与自检/克隆的那两轮是 **1605s / 2697s**。第一反应容易归因成"新磁盘慢"——

@@ -55,6 +55,9 @@ def make_mirror(root: Path, per_profile: dict[str, int]) -> Path:
 def main() -> int:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
+        # 隔离：默认没有 preserve_sessions，避免读到本机真实的 local.json
+        old_cfg = sync._skill_config
+        sync._skill_config = lambda: {}
 
         # S1：备份 100 / 活库 5 ⇒ 拒绝（这就是 10-31 的形态）
         home1 = root / "home1"
@@ -117,6 +120,24 @@ def main() -> int:
         ok6, _ = sync.shrink_guard(m6)
         check("S6 工作树被清空仍拦得住", ok6 is False)
 
+        # S7：退役档（preserve_sessions）既是「不计入 shrink 判据」也是「不 prune」
+        #     形态＝10-31 真实场景：备份 main 100 + ceo 400，活库只剩 main 80（bot 档不恢复）
+        home7 = root / "home7"
+        make_live(home7, 80)
+        m7 = make_mirror(root / "h7", {"main": 100, "ceo": 400})
+        sync.HERMES_HOME = home7
+        ok7a, why7 = sync.shrink_guard(m7)
+        check("S7 未声明退役档 ⇒ 拒绝（ceo 400 计入分母）", ok7a is False)
+        check("S7 拒绝原因点名 ceo", "ceo" in why7)
+
+        sync._skill_config = lambda: {"preserve_sessions": ["ceo"]}
+        check("S7 preserve 读到 ceo", sync._preserved_profiles() == {"ceo"})
+        ok7b, _ = sync.shrink_guard(m7)
+        check("S7 声明退役档后 ⇒ 放行（只比 main 100/80）", ok7b is True)
+        check("S7 ceo 不被列进可删档", sync._deletable_profiles({"ceo"}) == set())
+        check("S7 未声明的档仍按原逻辑判可删", sync._deletable_profiles({"zzz"}) == {"zzz"})
+
+        sync._skill_config = old_cfg
         sync.HERMES_HOME = old_home
 
     print(f"\n== {PASS + FAIL} 项，失败 {FAIL} ==")

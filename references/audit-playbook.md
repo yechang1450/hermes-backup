@@ -16,7 +16,7 @@
 |---|---|---|
 | 阶段预算/超时 | `grep -n "TIMEOUT\|timeout=" scripts/sync.py scripts/hb-autosync.py` | 与 `references/auto-sync.md`、SKILL.md 里写的秒数一致 |
 | 分片阈值 | `grep -n "PART_MAX" scripts/sync.py` | 文档里的 12MB 与常量一致；历史值只允许出现在「阈值演进」叙述里 |
-| 换代阈值 | `grep -n "12,000,000\|12GB" references/generations.md` | 全文只剩 12GB 一处现值，旧值仅在「为什么上调」段落 |
+| 换代阈值 | `grep -rn 'ROTATE_AT_GB\|.size' scripts/sync.py references/generations.md` | 判据只在 generations.md「触发条件」；`sync.py` 的 `ROTATE_AT_GB` 必须与其中 `.size` 那条一致 |
 | 场景数 / 套数 | `ls scripts/test-*.py | wc -l`、`grep -c '== S' scripts/test-hb-sentinel.py` | **文档不得写死数量**（只写「以 ls 为准」或末行判据）；若已写死，拿实测值去改掉它 |
 | 命令模板 | 逐条把文档里的命令在克隆里试跑（`--help` 级别） | 路径真实存在、参数被接受 |
 | 版本号 | `grep -rn "0\.4\." SKILL.md references/ | head` | 现值只在 frontmatter 与提交信息；其余只作历史叙述 |
@@ -51,7 +51,7 @@ bash -n scripts/*.sh
 ## 路线 D：公开面卫生（这个仓是公开的）
 
 ```bash
-grep -rn 'C:/Users/' scripts/ templates/ references/ SKILL.md   # 必须为空
+grep -rnE 'C:/Users/[A-Za-z0-9]' scripts/ templates/ references/ SKILL.md   # 必须为空（占位 `C:/Users/<名>` 会误报）
 grep -rniE 'sk-[a-z0-9]{10,}|ghp_|AKIA|BEGIN (RSA|OPENSSH)' .    # 必须为空
 git check-ignore -v local.json                                    # 机器本地配置不进仓
 ```

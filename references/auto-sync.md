@@ -1,6 +1,6 @@
 # 自动同步（watchdog 四机制）— 判定与实施
 
-> **当前状态（0.4.64）**：全部落地并在跑——存储格式（原样文本＋分片）、单实例防撞锁（v3.2：锁记录持有者 pid，持有进程消失即立即接管）、两枚自动同步脚本随技能分发（安装见文末）、哨兵脚本（`HERMES_HOME/scripts/hb-sentinel.py`，官方 cron 每 2 分钟、`--no-agent`）与周期任务（`hb-autosync.py` 每 2h）。轮次性能（sync v3.3/v3.4）＝单进程批量导出（≈8x，与 CLI 输出逐字节一致）＋未变文件不重写（mtime 不抖、git 不重哈希整树）。哨兵触发受「距上次完成同步 ≥20 分钟」新鲜度闸约束；触发失败会复位允许重试，但重试仍受该闸与静默窗约束——**静默窗长期不满足时由 ③ 周期轮兜底**，数据链不会断。
+> **当前状态**：全部落地并在跑——存储格式（原样文本＋分片）、单实例防撞锁（v3.2：锁记录持有者 pid，持有进程消失即立即接管）、两枚自动同步脚本随技能分发（安装见文末）、哨兵脚本（`HERMES_HOME/scripts/hb-sentinel.py`，官方 cron 每 2 分钟、`--no-agent`）与周期任务（`hb-autosync.py` 每 2h）。轮次性能（sync v3.3/v3.4）＝单进程批量导出（≈8x，与 CLI 输出逐字节一致）＋未变文件不重写（mtime 不抖、git 不重哈希整树）。哨兵触发受「距上次完成同步 ≥20 分钟」新鲜度闸约束；触发失败会复位允许重试，但重试仍受该闸与静默窗约束——**静默窗长期不满足时由 ③ 周期轮兜底**，数据链不会断。
 
 ## 官方件：Hermes cron 纯脚本任务
 
@@ -56,6 +56,18 @@ hermes cron run <任务id>      # 各触发一轮核验（同步单轮 4–6 分
 
 参考参数：静默阈值 5 分钟（按全库最后一条消息计时）、长静默 1 小时、任意触发最小间隔 20 分钟、哨兵轮询 2 分钟。哨兵状态文件 `HERMES_HOME\state\hb-sentinel-state.json` 含 `last_busy_reasons` / `last_msg_age_s` / `last_trigger_*`——「为何（未）触发」可直接从状态文件读出。
 
+### 换机/恢复后：任务已在盘但是被禁用（不要重建，重启用）
+
+从备份恢复出来的 `cron/jobs.json` 里两个任务通常 `enabled: false`。此时**不要 `cron create`**——会多出重复任务、两套一起抢锁。启用的官方命令是 `hermes cron resume <id>`；`hermes cron edit` **没有** `--enable` 参数（报 unrecognized arguments）。
+
+**有一个显示陷阱**：`jobs.json` 里明明是 `enabled: false`，`hermes cron list` 仍可能显示 `[active]`——那一列读的是历史状态，不是启用位。所以「到底启没启用」要三处分开取、缺一不可：
+
+1. `cron/jobs.json` 的 `enabled` 字段（地面真值）；
+2. `hermes cron list` 里该任务的 Next run 是否在未来；
+3. `cron/executions.db` 里该 job_id 的**新行**，并且要看 `source` 列——`direct` 是手动 `cron run` 打出来的，`builtin` 才是 ticker 自己跳的。**只有 builtin 能证明调度活着**；只有 direct 说明任务从没自然触发过。
+
+两个任务都 resume 之后，等哨兵自己跳一次（2 分钟级别），executions.db 里出现 `builtin` 行才算真跑通。
+
 ## 判读与运维（未触发≠故障）
 
 - 核查顺序：① 哨兵状态文件——`last_busy_reasons` / `last_msg_age_s` 给出上一轮「为何判忙」，`last_trigger_*` 是最近一次真实触发；② 镜像提交链——每 2h 一条＝③ 轮正常在兜底（自动同步在跑的正面证据）；③ 两个任务在 `hermes cron list` 的 Last run 新鲜度。
@@ -79,7 +91,7 @@ hermes cron run <任务id>      # 各触发一轮核验（同步单轮 4–6 分
 
 ### 分支回归测试（0.4.3，可复跑）
 ```bash
-python scripts/test-hb-sentinel.py     # ①②④⑤/新鲜度闸/锁活性/失败上报 → 12 个场景块（S1/S1b/S2–S9/S10）
+python scripts/test-hb-sentinel.py     # ①②④⑤/新鲜度闸/锁活性/失败上报 → 全部场景块（看末行「总判定：PASS」）
 python scripts/test-hb-health.py       # 健康记账单一来源 + 未跑完补偿去重
 ```
 两个脚本都用假 `HERMES_HOME` + 桩 `sync.py`，纯标准库、只写临时目录、不跑真同步；末行 `== 总判定：PASS ==` 且退出码 0 即通过（`HB_TEST_BASE=<目录>` 可指定工作目录）。
@@ -122,7 +134,7 @@ python scripts/test-hb-health.py       # 健康记账单一来源 + 未跑完补
 **修法（0.4.15）**：
 1. 导出改 `Popen + communicate(timeout=2000)`，超时 `_kill_tree()`（psutil 递归）杀整树；
 2. 每轮 `acquire_lock()` 后调用 `_reap_orphan_exporters()`，只回收父进程已消失的导出进程；
-   识别条件四件套（python ＋ `hermes-cloud-backup` ＋ `export_all_profiles.py` ＋ `--home`/`--out`），
+   识别条件四件套（python ＋ `hermes-backup` ＋ `export_all_profiles.py` ＋ `--home`/`--out`），
    避免误杀"命令行里只是提到文件名"的进程；
 3. `hb-autosync.py` 改 Popen + `wait(timeout)`，超时同样杀整树，并在 child log 落一行"已杀进程树 N 个"。
 
@@ -143,7 +155,7 @@ python scripts/test-hb-health.py       # 健康记账单一来源 + 未跑完补
 **做法**：哨兵增加 `⑤ overdue`——镜像 `meta/sync-state.json` 的 `finished_at` 超过 **2.5 小时**、
 当下没有同步在跑、且不满足"20 分钟新鲜"闸，就补一轮。它与既有触发互斥（先命中先触发）。
 
-**回归**：`scripts/test-hb-sentinel.py` 增加 S8（超期触发 overdue）/ S9（刚同步过不触发），共 12 个场景块全 PASS。
+**回归**：`scripts/test-hb-sentinel.py` 增加 S8（超期触发 overdue）/ S9（刚同步过不触发）；后续又加 S11（shrink guard 只报一次）。判据看末行「总判定：PASS」。
 
 **「下一班几点」要读不要算**：interval 任务的 `next_run_at` 锚在**上一次完成时刻 + 间隔**，不是整点/固定时钟槽——实测 06:51:35 跑完后下一班是 08:51:35，按「每 2 小时」心算成 08:29 会差 20 多分钟；**手动补跑一轮不会重排 cron 的下一班**（它只影响镜像内容，不影响调度）。报时间前一律读 `hermes cron list` 的 `Next run`（或 `--json` 里的 `next_run_at`）。
 

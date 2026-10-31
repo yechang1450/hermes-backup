@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""selfcheck.py — 一条命令跑完 hermes-cloud-backup 的全部回归与一致性检查。
+"""selfcheck.py — 一条命令跑完 hermes-backup 的全部回归与一致性检查。
 
 用法:
     python scripts/selfcheck.py                          # 默认（约 1 分钟）：编译 + 全部 test-*.py + 文档引用
@@ -87,6 +87,10 @@ def compile_all(results: list) -> None:
 
 def run_tests(results: list) -> None:
     tests = sorted(HERE.glob("test-*.py"))
+    if not tests:
+        # 0 套测试原来算「没东西可跑」⇒ PASS（2026-10-31 审计发现）
+        step("回归测试", 2, "scripts/ 下没有 test-*.py —— 0 套不能算通过", results)
+        return
     for t in tests:
         rc, last = run([PY, str(t)])
         step(f"测试 {t.name}", rc, last, results)

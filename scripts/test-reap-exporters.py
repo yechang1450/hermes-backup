@@ -4,7 +4,7 @@
 镜像与各档 state.db；下一轮再起一个 → 两个导出同时写同一批文件，连续两轮 3300s 超时。
 
 判据：
-  S1 孤儿（父进程已死、命令行含 hermes-cloud-backup + export_all_profiles.py + --home/--out）⇒ 被杀
+  S1 孤儿（父进程已死、命令行含 hermes-backup + export_all_profiles.py + --home/--out）⇒ 被杀
   S2 父进程健在的同形态进程 ⇒ 不动
   S3 命令行只提到文件名（不带 --home/--out）的孤儿 ⇒ 不动（防误杀）
 """
@@ -19,7 +19,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import sync  # noqa: E402
 
-import psutil  # noqa: E402
+try:
+    import psutil  # noqa: E402
+except ModuleNotFoundError:
+    # 冷机（Hermes 自带 tools python 就没有 psutil）上，sync.py 的孤儿回收本身也退化成空转，
+    # 这条测试无从验证。跳过并说明代价，不要把「本机缺件」判成「逻辑坏了」（2026-10-31 审计）。
+    print("SKIP: 本机没有 psutil —— sync.py 的孤儿导出回收会静默空转。"
+          "建议：python -m pip install psutil")
+    raise SystemExit(0)
 
 # 只要求「以 export_all_profiles.py 结尾」的 argv 尾；用脚本自身目录拼，避免把用户名/绝对路径写进公开仓
 FAKE = str(Path(__file__).resolve().parent / "export_all_profiles.py")
@@ -86,7 +93,7 @@ def main() -> int:
     orphans, killed = [], []
     for attempt in range(3):
         _spawn_orphan_maker([FAKE, "--home", token + str(attempt), "--out", token + str(attempt)])
-        # 判据用「argv 带本 run 的 token」而不是目录名：克隆目录未必叫 hermes-cloud-backup
+        # 判据用「argv 带本 run 的 token」而不是目录名：克隆目录未必叫 hermes-backup
         orphans = _wait_find(lambda p, cl: token in cl and "--home" in cl and "--out" in cl
                              and not psutil.pid_exists(p.info["ppid"]))
         if orphans:

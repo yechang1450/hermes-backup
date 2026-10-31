@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""hermes-cloud-backup · sync v3.9  (2026-10-23)
+"""hermes-backup · sync v3.9  (2026-10-23)
 
 把本机 Hermes 数据采集到镜像工作区（目录自动解析），然后 commit -> push
 到 GitHub 私有仓（永不 force-push）。用法：
@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import contextlib
 import fnmatch
 import json
 import os
@@ -72,7 +73,7 @@ def _appdata() -> Path:
 
 HERMES_HOME = _localappdata() / "hermes"
 ROAMING = _appdata() / "Hermes"
-SKILL_DIR = HERMES_HOME / "skills" / "hermes-cloud-backup"
+SKILL_DIR = HERMES_HOME / "skills" / "hermes-backup"
 SCRATCH = HERMES_HOME / "cache" / "scratch" / "hb-exports"
 
 # 下列由 main() 的 resolve_identity() 解析（--mirror / --owner / --remote 可覆盖）
@@ -103,6 +104,32 @@ def _skill_config() -> dict:
         except Exception:
             return {}
     return {}
+
+
+def _gh_exe() -> str | None:
+    """找 gh：先看 PATH，再查各平台官方安装位置。
+
+    2026-10-31 实案：新机从备份恢复时只拷了 `C:\\Program Files\\GitHub CLI\\gh.exe`，
+    没走安装器 ⇒ PATH 里没有它，`_gh_exe()` 返回 None，ensure_private 于是
+    fail-closed 拒绝推送（这正是 00:18 那轮把 8,284 个 profile 文件、2,311 个会话文件
+    从工作树清掉却没推上去的原因）。但「PATH 里没有」≠「没装」——官方安装位置再找一次。
+    """
+    hit = shutil.which("gh")
+    if hit:
+        return hit
+    cands: list[Path] = []
+    if os.name == "nt":
+        for base in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)"),
+                     os.environ.get("LOCALAPPDATA")):
+            if base:
+                cands.append(Path(base) / "GitHub CLI" / "gh.exe")
+                cands.append(Path(base) / "Programs" / "GitHub CLI" / "gh.exe")
+    else:
+        cands += [Path("/usr/bin/gh"), Path("/usr/local/bin/gh"), Path("/opt/homebrew/bin/gh")]
+    for c in cands:
+        if c.is_file():
+            return str(c)
+    return None
 
 
 def resolve_mirror(cli_value: str) -> Path:
@@ -147,7 +174,7 @@ def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: s
     if not owner and owner_arg:
         owner = owner_arg
     if not owner:
-        gh = shutil.which("gh")
+        gh = _gh_exe()
         if gh:
             p = subprocess.run([gh, "api", "user", "--jq", ".login"],
                                capture_output=True, text=True)
@@ -163,7 +190,7 @@ PUSH_TIMEOUT = 1500                     # 推送预算：一次性大重排（�
 SIZE_GUARD_FILE = 95 * 1024 * 1024      # 单文件上限
 STABILIZE_MIN_BYTES = 5 * 1024 * 1024   # 只对「大会话」做尾部稳定化：小文件整份重写无所谓，
                                         # 但大会话每轮整份重写会拖垮 git 增量（见 session_layout.py）
-ROTATE_AT_GB = 12                    # 换代阈值（与 references/generations.md 一致）
+ROTATE_AT_GB = 8                     # 换代阈值：与 references/generations.md「触发条件」的 .size 那条一致（2026-10-27 由 12 下调）
 SIZE_GUARD_TOTAL = (ROTATE_AT_GB + 1) * 1024 * 1024 * 1024   # 安全闸：比换代阈值高 1GB，先换代再撞闸（原来固定 4096MB，会先于 12GB 换代把同步中止，2026-10-26 审查发现）
 PART_MAX = 12 * 1024 * 1024             # 会话分片阈值（0.4.26 由 45MB 下调）。
                                         # 尾部稳定化后，每轮只有"变动的那个分片"重写 ⇒ 阈值越小、单轮重写越少
@@ -352,13 +379,23 @@ def copy_file(src: Path, dst: Path) -> bool:
     return True
 
 
-def prune_unvisited(root: Path) -> int:
-    """删掉本轮采集未保留的镜像侧文件与空目录（源侧已删除的残留）。"""
+def prune_unvisited(root: Path, keep_paths=()) -> int:
+    """删掉本轮采集未保留的镜像侧文件与空目录（源侧已删除的残留）。
+
+    `keep_paths` 里的子树**原样保留**（文件不删、空目录也不删）。用于「源侧已退役
+    但备份要留档」的目录——见 `_preserved_profiles()`。
+    """
+    keep = [str(Path(k)).replace("\\", "/").lower().rstrip("/") for k in keep_paths]
+
+    def _kept(p: Path) -> bool:
+        s = str(p).replace("\\", "/").lower()
+        return any(s == k or s.startswith(k + "/") for k in keep)
+
     removed = 0
     for r, dirs, files in os.walk(root, topdown=False):
         for f in files:
             p = Path(r) / f
-            if str(p) not in _COPIED:
+            if str(p) not in _COPIED and not _kept(p):
                 try:
                     p.unlink()
                     removed += 1
@@ -366,6 +403,8 @@ def prune_unvisited(root: Path) -> int:
                     pass
         for d in dirs:
             dp = Path(r) / d
+            if _kept(dp):
+                continue
             try:
                 if not any(dp.iterdir()):
                     dp.rmdir()
@@ -536,9 +575,21 @@ def collect_profiles(report: dict) -> None:
             if src.is_dir():
                 n += copy_tree(src, dst_root / name / d, skip_dirs={".hub"} if d == "skills" else None)
         report["profiles"][name] = n
-    gone = prune_unvisited(dst_root)
+    preserved = _preserved_profiles()
+    if not names and dst_root.is_dir():
+        # 活库一个 profile 都没有 = 新机未恢复 / 全部退役。此时「源侧没有」不代表
+        # 「该删」：2026-10-31 实案就是这一步把 8,284 个 profile 文件清掉的
+        # （当时只有「gh 不可用拒绝推送」挡着，工作树已经空了）。整层原样保留。
+        have = sum(len(fs) for _, _, fs in os.walk(dst_root))
+        if have:
+            log(f"profiles: 活库 0 档 —— 整层保留现有 {have} 个文件不清理"
+                f"（新机未恢复/全部退役形态；确要清空请手工删 profiles-overlay/）")
+            report["profiles"] = {}
+            return
+    keep_dirs = [dst_root / n for n in preserved if (dst_root / n).is_dir()]
+    gone = prune_unvisited(dst_root, keep_paths=keep_dirs)
     log(f"profiles: {len(names)} 档, {sum(report['profiles'].values())} 文件"
-        + (f"（清理 {gone} 个残留）" if gone else ""))
+        + (f"（清理 {gone} 个残留，保留 {len(keep_dirs)} 个退役档）" if gone or keep_dirs else ""))
 
 
 def collect_desktop(report: dict) -> None:
@@ -601,7 +652,7 @@ def ensure_private(report: dict, allow_unverified: bool = False) -> bool:
     而不是"跳过检查照推"——这个仓里有凭据和私人对话，检查没做成就不该推。
     确需在无法验证的环境里推，显式传 `--allow-unverified-privacy`。
     """
-    gh = shutil.which("gh")
+    gh = _gh_exe()
     slug = f"{GH_OWNER}/{GH_REPO}"
     def _unverifiable(why: str) -> bool:
         if allow_unverified:
@@ -747,6 +798,44 @@ def guard_zero_sessions(name: str, entry: dict, keep: dict, sessions_root: Path)
     return False
 
 
+def _preserved_profiles() -> set[str]:
+    """local.json 的 preserve_sessions：本机已退役、但备份要原样留着的档。
+
+    2026-10-31 实案：新机只恢复 default，16 个 bot 档的 profiles/<name>/ 目录整个不存在
+    ⇒ _deletable_profiles 把它们全判「可整档删除」、_count_live_sessions 又给出活库 0
+    ⇒ shrink guard 同时把备份判成「将被清空」。两者叠加的结果是备份要么被 rmtree、
+    要么永远同步不了。退役是主人的既成决定，不是「数据丢了」，所以这些档要既不进
+    shrink 判据、也不允许 prune——它们的历史仍按「镜像独有、可随时 git 取回」保留。
+    """
+    raw = _skill_config().get("preserve_sessions") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return {str(x).strip() for x in raw if str(x).strip()}
+
+
+def _deletable_profiles(candidates: set[str]) -> set[str]:
+    """只有「活库里连档目录都不在了」的档才允许整档删除。
+
+    只按本轮 wanted 判断，会把「profile.yaml 暂时缺失 / 改名 / 尚未注册」的档当成已删除，
+    一次 rmtree 掉整档历史——2026-10-31 实案的 8,284 个 profile 文件就是这样没的。
+    """
+    out: set[str] = set()
+    pdir = HERMES_HOME / "profiles"
+    keep_forever = _preserved_profiles()
+    for name in sorted(candidates):
+        if name == "main":
+            continue
+        if name in keep_forever:
+            # 不在这里打日志：prune_stale 已会为同一档打「跳过 …（本轮未导出，保留现有文件）」，
+            # 两处都打会让 16 个退役档刷 32 行，容易把真正的告警淹掉。
+            continue
+        if not (pdir / name).exists():
+            out.add(name)
+        else:
+            log(f"sessions 清理：跳过 {name}/（档目录还在、只是本轮没导出——保留现有文件）")
+    return out
+
+
 def prune_stale(sessions_root: Path, keep: dict[str, set[str]],
                 allow_delete: frozenset[str] | set[str] = frozenset()) -> None:
     """删掉本轮导出集合之外的旧文件（会话已删除 / 档已不存在），其余原样保留、mtime 不动。
@@ -783,6 +872,16 @@ def prune_stale(sessions_root: Path, keep: dict[str, set[str]],
 # 「gh 不可用拒绝推送」挡住了它。备份一旦这样提交，HEAD 就只剩新机的几十个会话；
 # guard_zero_sessions 拦不住「数量少但非零」的情形，所以要在采集**之前**先拦。
 GUARD_EXIT = 6                  # shrink guard 拒绝的专用退出码（包装器/健康账本都认它）
+MASS_DELETE_MIN = 100           # 提交前「批量删除」闸：删除数至少这么多才判
+MASS_DELETE_RATIO = 0.30        # 且占已跟踪文件数的比例超过它 ⇒ 判误删
+
+
+class MassDeleteError(RuntimeError):
+    """一轮里删掉的已跟踪文件太多（任何一层被整批清掉）⇒ 拒绝提交。"""
+
+    def __init__(self, count: int, tracked: int, sample: list[str]):
+        self.count, self.tracked, self.sample = count, tracked, sample
+        super().__init__(f"拟删除 {count}/{tracked} 个已跟踪文件（样例：{sample[:3]}）")
 SHRINK_GUARD_MIN_BASE = 20      # 备份里至少这么多会话才启用（小档不拦，避免误伤）
 SHRINK_GUARD_RATIO = 0.5        # 活库会话数 < 备份 × 该比例 ⇒ 判「疑似新机/未恢复」
 
@@ -855,12 +954,13 @@ def _count_mirror_sessions(mirror: Path) -> dict[str, int]:
 
 def shrink_guard(mirror: Path) -> tuple[bool, str]:
     """本轮同步会不会把备份「清空」成一台空机器。返回 (是否放行, 拒绝原因)。"""
-    mir = _count_mirror_sessions(mirror)
+    preserve = _preserved_profiles()
+    mir = {k: v for k, v in _count_mirror_sessions(mirror).items() if k not in preserve}
     total_mir = sum(mir.values())
     if total_mir < SHRINK_GUARD_MIN_BASE:
         return True, ""
     live = _count_live_sessions()
-    known = {k: v for k, v in live.items() if v >= 0}
+    known = {k: v for k, v in live.items() if v >= 0 and k not in preserve}
     if not known:
         # 一个档都读不到：没有可比对的事实，宁可放过——闸门的职责是拦住确凿的清空，不是猜。
         return True, ""
@@ -922,6 +1022,23 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         # 2026-10-26 实案：运行目录缺 export_all_profiles.py，一连几轮都在走慢路径且无任何提示。
         miss = [x.name for x in (runner, helper) if not x.is_file()]
         log(f"!! 批量导出不可用（缺 {miss}，目录 {scripts_dir}）：本轮回退逐档 CLI，会慢 3–5 倍")
+    if bulk_ok:
+        # 内存硬闸（2026-10-31 新机）：export_all() 会把整档会话读成 Python 对象（main 约 1.5GB 原始
+        # JSON ⇒ 进程 RSS 峰值数 GB）。宁可**少跑一轮**，也不能把整机拖进 OOM（那会连桌面端一起崩）。
+        #   <3GB 可用：跳过导出，本轮 exit 2（下一轮再试）
+        #   <8GB 可用：退回逐档 CLI（一次只处理一个档，峰值更低、可被 900s 单独掐断）
+        try:
+            import psutil as _ps
+            avail_gb = _ps.virtual_memory().available / 1073741824
+        except Exception:
+            avail_gb = 999.0
+        if avail_gb < 3:
+            log(f"!! 可用内存仅 {avail_gb:.1f}GB：本轮跳过导出（exit 2），避免整机 OOM")
+            raise RuntimeError(f"low_memory（可用 {avail_gb:.1f}GB < 3GB）")
+        if avail_gb < 8:
+            bulk_ok = False
+            log(f"!! 可用内存 {avail_gb:.1f}GB 偏低：跳过单进程批量导出，改走逐档 CLI（峰值更低）")
+
     if bulk_ok:
         shutil.rmtree(rawdir, ignore_errors=True)
         t0 = time.time()
@@ -990,7 +1107,15 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
                     add_entry(name, rawdir / f"{name}.jsonl", {"via": "bulk"})
                 shutil.rmtree(rawdir, ignore_errors=True)
                 existing = {x.name for x in sessions_root.iterdir() if x.is_dir()}
-                prune_stale(sessions_root, keep, allow_delete=existing - set(wanted))
+                prune_stale(sessions_root, keep,
+                            allow_delete=_deletable_profiles(existing - set(wanted)))
+                # 批量路径原本直接 return：某档 0 产出（guard_zero_sessions 已把它标 ok=False）
+                # 也照样走到「sync 完成」+ exit 0，包装器还会把失败计数清零（2026-10-31 审计发现）。
+                bad = sorted(nm for nm, e in report["exports"].items() if not e.get("ok"))
+                if bad:
+                    report["failed_profiles"] = bad
+                    log(f"!! {len(bad)} 个档导出失败（{bad}）：旧文件已保留；"
+                        f"本轮仍提交其它档，但按失败记（exit 5）")
                 return
 
     # ── 路径 B（回退）：逐档 hermes CLI（v3.2 行为，原样保留）──
@@ -1050,7 +1175,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             continue
         do_one(d.name, d.name)
     existing = {x.name for x in sessions_root.iterdir() if x.is_dir()}
-    prune_stale(sessions_root, keep, allow_delete=existing - set(wanted))
+    prune_stale(sessions_root, keep, allow_delete=_deletable_profiles(existing - set(wanted)))
     bad = sorted(nm for nm, e in report["exports"].items() if not e.get("ok"))
     if bad:
         report["failed_profiles"] = bad
@@ -1171,7 +1296,7 @@ def _reap_orphan_exporters() -> list[int]:
     识别条件（全部满足才算，避免误杀"命令行里只是提到文件名"的进程）：
     ① python 解释器；② 真实参数里有一个以 ``export_all_profiles.py`` 结尾的脚本路径；
     ③ 带 ``--home`` 与 ``--out``（真实调用形态）；④ 父进程已不存在。
-    **不要**再要求命令行里出现 ``hermes-cloud-backup`` 这个目录名——克隆到别的目录名
+    **不要**再要求命令行里出现 ``hermes-backup`` 这个目录名——克隆到别的目录名
     （或换 profile 安装）时该条件恒不满足，孤儿永远回收不到（2026-10-26 干净克隆实测）。
     导出会写镜像与读各档 state.db，留着它＝下一轮两个导出进程同时写同一批文件
     （2026-10-24 实案：连续两轮 3300s 超时）。
@@ -1317,7 +1442,7 @@ def ensure_repo() -> None:
         git("remote", "set-url", "origin", REMOTE_URL)
 
 
-def commit_and_push(message: str, no_push: bool) -> dict:
+def commit_and_push(message: str, no_push: bool, allow_shrink: bool = False) -> dict:
     result: dict = {}
     ensure_repo()
     # 冲突残留防御：merge 状态未清理则中止
@@ -1333,6 +1458,19 @@ def commit_and_push(message: str, no_push: bool) -> dict:
         log("git add 撞上 index.lock —— 清锁后重试一次")
         purge_index_lock(0)
         git("add", "-A")
+    deleted = [x for x in git("diff", "--cached", "--name-only", "--diff-filter=D",
+                              check=False).stdout.splitlines() if x.strip()]
+    tracked = [x for x in git("ls-files", check=False).stdout.splitlines() if x.strip()]
+    if deleted and tracked and len(deleted) >= MASS_DELETE_MIN \
+            and len(deleted) > len(tracked) * MASS_DELETE_RATIO:
+        if allow_shrink:
+            # 2026-10-31：--allow-shrink 的语义就是「调用方已确认按本机现状覆盖备份」
+            # （跨机换代：旧机 17 档、新机只恢复 default 一档）。此前它只放行
+            # shrink_guard，却在 mass-delete 闸前被拦死 —— 两道闸都防误删，但调用方
+            # 已经明示知情，再拦一次等于让这个参数在它唯一该用的场景里完全无效。
+            log(f"!! 批量删除闸已由 --allow-shrink 放行：拟删 {len(deleted)}/{len(tracked)} 个已跟踪文件")
+        else:
+            raise MassDeleteError(len(deleted), len(tracked), deleted[:5])
     status = git("status", "--porcelain").stdout.strip()
     if status:
         git("commit", "-m", message)
@@ -1344,6 +1482,9 @@ def commit_and_push(message: str, no_push: bool) -> dict:
     if no_push:
         result["pushed"] = None
         return result
+    branch = git("rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
+    if branch and branch != "main":
+        raise RuntimeError(f"当前分支是 {branch} 而不是 main：提交会推到别处（push 固定推 origin main）")
     t1 = time.time()
     # 推送：最多 3 次（真实失败模式是 GitHub 侧「传输超 ~6–8 分钟即掐断」与 fake-ip 偶发 RST，
     # 两者都是瞬态、重试可过）。每次失败先 pull --no-rebase 对齐线上（非破坏，冲突即中止），
@@ -1373,7 +1514,7 @@ def commit_and_push(message: str, no_push: bool) -> dict:
 def _maybe_create_remote(enabled: bool) -> None:
     if not enabled or not GH_OWNER:
         return
-    gh = shutil.which("gh")
+    gh = _gh_exe()
     if not gh:
         log("!! --create-remote 需要 gh，跳过")
         return
@@ -1403,8 +1544,11 @@ def main() -> int:
                     help="只做采集（覆盖层/看板/工具镜像），不 commit/push；仍会导出会话，要连导出都跳过多加 --skip-exports")
     ap.add_argument("--skip-exports", action="store_true",
                     help="跳过会话导出（镜像里已有的会话文件保持不动）")
+    ap.add_argument("--push", action="store_true",
+                    help="提交后推送到远端（**默认不推**：2026-10-31 起本项目改为纯本机线下备份，"
+                         "GitHub 上不再保留数据仓；只有你明确想推时才加这个开关）")
     ap.add_argument("--no-push", action="store_true",
-                    help="只提交到本地，不推送远端")
+                    help="（兼容保留）不推送远端 —— 现在这是默认行为")
     ap.add_argument("--message", default="", help="自定义提交信息（默认 sync <时间> host=<主机>）")
     ap.add_argument("--mirror", default="", help="镜像工作区目录（默认自动探测）")
     ap.add_argument("--owner", default="", help="GitHub 属主（默认从镜像 remote 或 gh 登录解析）")
@@ -1419,6 +1563,8 @@ def main() -> int:
     ap.add_argument("--create-remote", action="store_true",
                     help="远端不存在时用 gh 创建私有仓")
     args = ap.parse_args()
+    # 纯本机模式：默认只 commit 到本地镜像仓，不联网、不推 GitHub。
+    args.no_push = not args.push
 
     if not acquire_lock():
         return 0
@@ -1462,10 +1608,21 @@ def main() -> int:
     MIRROR.mkdir(parents=True, exist_ok=True)
     (MIRROR / "logs").mkdir(parents=True, exist_ok=True)
     t_ph = time.time()
-    collect_home(report)
-    collect_profiles(report)
-    collect_desktop(report)
-    sync_tools(report)
+    try:
+        collect_home(report)
+        collect_profiles(report)
+        collect_desktop(report)
+        sync_tools(report)
+    except (OSError, sqlite3.Error, RuntimeError) as e:
+        # 采集期异常（权限/磁盘满/库被锁）原本直接 traceback：runs.jsonl、健康计数、meta 全都不写，
+        # 于是「连续失败」永远不涨、needs-attention 永不触发（2026-10-31 审计发现）。
+        msg = f"{type(e).__name__}: {e}"
+        log(f"!! 采集阶段失败：{msg}")
+        report["aborted"] = f"collect_failed: {msg}"
+        with contextlib.suppress(Exception):
+            write_meta(report, t0, success=False)
+        append_run(report, t0, 2)
+        return 2
     report["timings"] = {"collect": round(time.time() - t_ph, 1)}
     t_ph = time.time()
     try:
@@ -1477,7 +1634,7 @@ def main() -> int:
         msg = f"{type(e).__name__}: {e}" if not isinstance(e, RuntimeError) else str(e)
         log(f"!! 导出阶段失败：{msg}")
         report["aborted"] = msg
-        write_meta(report, t0)
+        write_meta(report, t0, success=False)
         append_run(report, t0, 2)
         return 2
     report["timings"]["export"] = round(time.time() - t_ph, 1)
@@ -1485,7 +1642,7 @@ def main() -> int:
     if over:
         log(f"!! 采集出现超限单文件（>{SIZE_GUARD_FILE // 1048576}MB），中止（不 commit/push）：{over}")
         report["aborted"] = "oversize_session"
-        write_meta(report, t0)
+        write_meta(report, t0, success=False)
         append_run(report, t0, 2)
         return 2
     try:
@@ -1502,37 +1659,48 @@ def main() -> int:
         for path, s in big[:10]:
             log(f"   {path} = {s/1048576:.1f}MB")
         report["aborted"] = "oversize_file"
-        write_meta(report, t0)
+        write_meta(report, t0, success=False)
         append_run(report, t0, 2)
         return 2
     if total > SIZE_GUARD_TOTAL:
         log(f"!! 镜像总量 {total/1048576:.0f}MB 超上限，中止（不 commit/push）")
         report["aborted"] = "oversize_total"
-        write_meta(report, t0)
+        write_meta(report, t0, success=False)
         append_run(report, t0, 2)
         return 2
 
     if args.collect_only:
         log(f"采集完成（collect-only）：总量 {total/1048576:.1f}MB")
-        write_meta(report, t0)
+        # 只采集不是一次成功同步：别写 finished_at（否则哨兵会以为刚同步过、把 overdue 重置）
+        write_meta(report, t0, success=False)
         append_run(report, t0, 0)
         return 0
 
     if not args.no_push:
         _maybe_create_remote(args.create_remote)
         if not ensure_private(report, allow_unverified=args.allow_unverified_privacy):
-            write_meta(report, t0)
+            write_meta(report, t0, success=False)
             append_run(report, t0, 4)
             return 4
     msg = args.message or f"sync {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %z')} host={report['host']}"
     t_ph = time.time()
     try:
-        git_result = commit_and_push(msg, args.no_push)
+        git_result = commit_and_push(msg, args.no_push, allow_shrink=args.allow_shrink)
         report.update(git_result)
+    except MassDeleteError as e:
+        log(f"!! 本轮拟删除 {e.count}/{e.tracked} 个已跟踪文件（>{int(MASS_DELETE_RATIO * 100)}%）"
+            f"——判为误删，已中止；镜像回滚到 HEAD（未跟踪的新文件保留）")
+        log(f"   样例：{e.sample}")
+        git("reset", "-q", check=False)
+        git("checkout", "--", ".", check=False)
+        report["aborted"] = "mass_delete_guard"
+        write_meta(report, t0, success=False)
+        append_run(report, t0, GUARD_EXIT)
+        return GUARD_EXIT
     except (RuntimeError, subprocess.TimeoutExpired) as e:
         log(f"!! git 环节失败：{e}")
         report["git_error"] = str(e)
-        write_meta(report, t0)
+        write_meta(report, t0, success=False)
         append_run(report, t0, 3)
         return 3
     report["timings"]["git"] = round(time.time() - t_ph, 1)
@@ -1642,8 +1810,13 @@ def _atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
-def write_meta(report: dict, t0: float) -> None:
-    report.setdefault("finished_at", datetime.now().astimezone().isoformat())
+def write_meta(report: dict, t0: float, success: bool = True) -> None:
+    """记账。**只有成功轮才写 finished_at**：它是「上次成功同步」的唯一凭据，被失败轮覆盖后
+    哨兵的 20 分钟新鲜度闸与 overdue 判断都会被重置（2026-10-31 审计发现）。"""
+    if success:
+        report.setdefault("finished_at", datetime.now().astimezone().isoformat())
+    else:
+        report["last_failed_at"] = datetime.now().astimezone().isoformat()
     report.setdefault("duration_seconds", round(time.time() - t0, 1))
     meta = MIRROR / "meta" / "sync-state.json"
     meta.parent.mkdir(parents=True, exist_ok=True)

@@ -261,6 +261,10 @@ def main() -> int:
         print("镜像里没有 sessions/：%s" % src_root)
         return 1
     profiles = args.profile or sorted(p.name for p in src_root.iterdir() if p.is_dir())
+    if not profiles:
+        # 空集原来一路走到 AUDIT-PASS（2026-10-31 审计实测）——对门禁是假绿
+        print("!! 镜像 sessions/ 下没有任何档目录：审计没有对象，按失败退出（0 档 ≠ 通过）")
+        return 1
 
     t0 = time.time()
     report: dict = {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"), "profiles": {}}
@@ -334,6 +338,7 @@ def main() -> int:
         print()
         if "error" in fl:
             print("== 文件层审计：跳过（%s）==" % fl["error"])
+            hard.append("文件层：无法读取采集白名单（%s）" % fl["error"])
         else:
             print("== 文件层审计（HERMES_HOME 顶层 vs 采集白名单）==")
             for name, kind, size, cls in fl["rows"]:

@@ -1,3 +1,16 @@
+## 1.1.6 — 2026-10-31 · 自动同步被 24h 静默标记压死的修复
+
+- **实案**：18:41 那轮被 shrink guard 拦下，写了 `state/hb-sync-guard-blocked.json`（静默 24 小时），
+  而清理这个标记只有 `hb-autosync` 在**它自己**跑成功时才做——手动轮修好了也不清。
+  结果 19:51 之后到 23:5x **再没有一轮自动同步**，而 cron 每 3 分钟都报 `completed`（脚本空转也返回 0）。
+  判据教训：**`cron list` 的 `ok` + `completed` 证明不了同步在跑，只有 `hb-sync-runs.jsonl` 里
+  新时间戳的行才算**。
+- 修法：`sync.py` 在**任何一轮成功**（含手动轮）末尾调用 `_clear_guard_marker()` 清掉该标记。
+- **技能目录备份从 gitlink 改为按文件**：镜像里 `home-overlay/skills/hermes-backup` 原来是
+  mode 160000 的子模块指针（因为技能目录自带 `.git`），换机恢复时那个目录会是空的＝技能没备份。
+  现在 `copy_tree` 统一跳过嵌套 `.git`，该路径按 51 个文件入库（`d5fbd27`）。
+- 镜像 `git gc`：松散对象 1,648 个/406MB → 打包，仓 1.93GiB+406MB → **1.72GiB / 2 包**。
+
 ## 1.1.5 — 2026-10-31 · 恢复手册对齐纯本机模式
 
 - `templates/RESTORE.md` 开头补一段：镜像在本机 `~/hermes-backup`，`<备份仓地址>` 直接写本机路径，

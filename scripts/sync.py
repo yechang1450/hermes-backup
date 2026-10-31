@@ -1714,6 +1714,11 @@ def main() -> int:
     report["finished_at"] = datetime.now().astimezone().isoformat()
     report["duration_seconds"] = round(time.time() - t0, 1)
     write_meta(report, t0)
+    # 一轮成功就要把「shrink guard 静默标记」清掉：那个标记的静默期是 24 小时，
+    # 而只有 hb-autosync 在它自己跑成功时才清 —— 手动轮修好了也不会清，
+    # 结果自动同步被静默压制一整天（2026-10-31 实案：18:41 被拦，直到 23:5x
+    # 账本里再没有新轮次，而 cron 每 3 分钟都报 completed）。
+    _clear_guard_marker()
     log(f"sync 完成：{report['duration_seconds']}s 总量 {total/1048576:.1f}MB "
         f"committed={report.get('committed')} pushed={report.get('pushed')}")
     code = 5 if report.get("failed_profiles") else 0
@@ -1814,6 +1819,17 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(text, encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _clear_guard_marker() -> None:
+    """成功一轮后清掉 hb-autosync 写的 shrink-guard 静默标记（幂等）。"""
+    marker = HERMES_HOME / "state" / "hb-sync-guard-blocked.json"
+    try:
+        if marker.exists():
+            marker.unlink()
+            log("已清除 shrink-guard 静默标记（本轮成功，自动同步恢复）")
+    except OSError as e:
+        log(f"!! 静止默标记清除失败：{e}")
 
 
 def write_meta(report: dict, t0: float, success: bool = True) -> None:

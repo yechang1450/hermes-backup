@@ -13,6 +13,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sqlite3
+from datetime import datetime
 import json
 import re
 import subprocess
@@ -143,6 +146,61 @@ def privacy_check(results: list) -> None:
     step("公开面卫生（凭据/隐私/路径）", rc, last, results)
 
 
+def cron_check(results: list) -> None:
+    """自动同步的**调度**在不在册、最近有没有真的跳。
+
+    2026-10-31 实案两连：换机后 `cron/jobs.json` 是空的（脚本都在、就是没人调度），
+    以及 shrink-guard 静默标记把自动轮压了 5 小时——两次 `cron list` 都显示正常。
+    所以这里只认两样：①jobs.json 里有这两个任务；②executions.db 里哨兵最近 15 分钟
+    有 completed 记录。缺任一条都判红，并直接给出修复命令。
+    """
+    home = Path(os.environ.get("HERMES_HOME") or (Path.home() / "AppData" / "Local" / "hermes"))
+    jobs_file = home / "cron" / "jobs.json"
+    want = ("hermes-backup 哨兵", "hermes-backup 周期同步")
+    try:
+        raw = json.loads(jobs_file.read_text(encoding="utf-8"))
+        jobs = raw if isinstance(raw, list) else raw.get("jobs", [])
+    except (OSError, ValueError) as exc:
+        step("自动同步调度", 2, f"读不到 {jobs_file}：{exc}", results)
+        return
+    names = {str(j.get("name", "")) for j in jobs}
+    missing = [w for w in want if w not in names]
+    if missing:
+        step("自动同步调度", 2,
+             f"缺任务 {missing}（脚本在但没人调度）—— 用 hermes cron create 按 references/auto-sync.md 重建",
+             results)
+        return
+    # 最近有没有真的跳：读 executions.db 里哨兵任务的行
+    db = home / "cron" / "executions.db"
+    if not db.exists():
+        step("自动同步调度", 2, f"没有 {db}（cron 从未跑过？）", results)
+        return
+    try:
+        con = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        row = con.execute(
+            "select finished_at, status from executions where job_id in "
+            "(select job_id from executions group by job_id) order by rowid desc limit 1").fetchone()
+        sent = con.execute(
+            "select finished_at, status from executions where job_id=? order by rowid desc limit 1",
+            (next((j.get("id") for j in jobs if j.get("name") == want[0]), ""),)).fetchone()
+        con.close()
+    except sqlite3.Error as exc:
+        step("自动同步调度", 2, f"executions.db 读取失败：{exc}", results)
+        return
+    if not sent:
+        step("自动同步调度", 2, "哨兵任务没有任何执行记录（建了但没跳）", results)
+        return
+    try:
+        age_min = (datetime.now().astimezone()
+                   - datetime.fromisoformat(sent[0])).total_seconds() / 60
+    except Exception:
+        age_min = 999
+    if age_min > 15:
+        step("自动同步调度", 2, f"哨兵最近一次执行在 {age_min:.0f} 分钟前（>15）—— 调度可能已停", results)
+    else:
+        step("自动同步调度", 0, f"两任务在册；哨兵 {age_min:.0f} 分钟前 {sent[1]}", results)
+
+
 def preserve_check(repo: str, results: list) -> None:
     """退役档（local.json 的 preserve_sessions）在镜像里必须还在。
 
@@ -203,6 +261,7 @@ def main() -> int:
     run_tests(results)
     doc_refs(results)
     privacy_check(results)
+    cron_check(results)
     if a.repo:
         if Path(a.repo).is_dir():
             preserve_check(a.repo, results)

@@ -47,6 +47,17 @@ $src = Join-Path $Repo 'desktop-overlay'
 if (-not (Test-Path $src)) { L "找不到 $src，退出。"; exit 3 }
 if (-not $DstRoot) { $DstRoot = Join-Path $env:APPDATA 'Hermes' }
 L "覆盖桌面数据: $src -> $DstRoot"
+# 2026-11-01：覆盖前先给桌面层留一份备份——`/E` 是**合并式**覆盖，不做备份的话
+# 同机恢复会把置顶/群聊/leveldb 直接回滚且无法撤回（leveldb 新旧 SST 混在一起还可能不一致）。
+$bak = Join-Path (Split-Path $DstRoot -Parent) ("Hermes.pre-restore-" + (Get-Date -Format 'yyyyMMdd-HHmmss'))
+if (Test-Path $DstRoot) {
+  try {
+    robocopy $DstRoot $bak /E /NFL /NDL /NP /R:0 /W:0 | Out-Null
+    L "桌面层已备份：$bak"
+  } catch {
+    L "桌面层备份失败（继续覆盖，请自行留意）：$_"
+  }
+}
 robocopy $src $DstRoot /E /NFL /NDL /NP /R:1 /W:1 | Out-Null
 $rc = $LASTEXITCODE
 L "robocopy 结束 rc=$rc"

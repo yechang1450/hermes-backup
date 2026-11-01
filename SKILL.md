@@ -1,7 +1,7 @@
 ---
 name: hermes-backup
 description: Local git-mirror backup/restore of Hermes state (no cloud).
-version: 1.1.12
+version: 1.1.13
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]

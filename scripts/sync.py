@@ -186,7 +186,7 @@ def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: s
     GIT_NAME = owner
     GIT_EMAIL = f"{owner}@users.noreply.github.com" if owner else ""
 
-PUSH_TIMEOUT = 1500                     # 推送预算：一次性大重排（如首次启用尾部稳定化）实测 900s 不够（2026-10-24 23:04 轮）
+PUSH_TIMEOUT = 480                     # 推送预算：一次性大重排（如首次启用尾部稳定化）实测 900s 不够（2026-10-24 23:04 轮）
 SIZE_GUARD_FILE = 95 * 1024 * 1024      # 单文件上限
 STABILIZE_MIN_BYTES = 5 * 1024 * 1024   # 只对「大会话」做尾部稳定化：小文件整份重写无所谓，
                                         # 但大会话每轮整份重写会拖垮 git 增量（见 session_layout.py）
@@ -500,6 +500,10 @@ def copy_kanban_dbs(src: Path, dst: Path) -> int:
             pass
         if snapshot_sqlite(db, target):
             n += 1
+        else:
+            # 库忙/损坏时 snapshot 返回 False：旧副本保留，但整轮仍会"成功"——
+            # 必须让人在日志与账本里看到，否则恢复时才发现这一层是旧的（2026-11-01 审计）。
+            log(f"!! 快照失败（库忙/损坏？）：{db.name} —— 保留旧副本，本轮该库不更新")
     return n
 
 
@@ -555,7 +559,15 @@ def collect_home(report: dict) -> None:
         if src.is_file():
             copy_file(src, MIRROR / "home-overlay" / f)
             n += 1
-    gone = prune_unvisited(dst_root)
+    # 2026-11-01 审计：这一层原本没有任何闸——源侧某个目录**瞬时缺失/不可读**（权限、正在改名、
+    # 杀进程留下的半截）就会把镜像里对应整层当"残留"删掉并正常提交。sessions 有 shrink guard、
+    # profiles 有零值短路，唯独 home 没有。这里按目录粒度保护：本轮源码侧不存在的目录，其镜像子树
+    # 不参与清理，并打一行日志。
+    missing = [d for d in HOME_DIRS if not (HERMES_HOME / d).is_dir()]
+    keep_paths = [dst_root / d for d in missing if (dst_root / d).is_dir()]
+    if keep_paths:
+        log(f"home-overlay：源侧缺 {len(keep_paths)} 个目录（{missing[:4]}）—— 对应镜像层原样保留、不清理")
+    gone = prune_unvisited(dst_root, keep_paths=keep_paths)
     if gone:
         log(f"home-overlay 清理：移除 {gone} 个残留文件")
     report["home_files"] = n
@@ -1075,7 +1087,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
             # 机器被别的活占满时，同一次导出能从 210s 涨到 1200s+（2026-10-26 实案：11:20 轮撞
             # 1200s 硬预算被掐 → 回退逐档 CLI → 整轮 48 分钟）；反过来，真卡死时它一个字节都不写。
             # 规则：每 30s 看一次 rawdir 体积，涨了就续期；连续 EXPORT_TIMEOUT 秒不涨才杀整树。
-            EXPORT_TIMEOUT, EXPORT_HARD_CAP = 1200, 3600
+            EXPORT_TIMEOUT, EXPORT_HARD_CAP = 900, 1500   # 必须 < 包装器 SYNC_TIMEOUT(1800)：脚本自己先收尾并写账本，别被外层 taskkill 腰斩
             t_exp = time.time()
             deadline = t_exp + EXPORT_TIMEOUT
             last_size, out, err = -1, None, None

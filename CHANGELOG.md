@@ -1,3 +1,13 @@
+## 1.1.11 — 2026-11-01 · 分支统一为 master（一仓一分支）
+
+- 主人口径：**一个项目＝一个 git 仓＝一个 `master` 分支**，线上线下都一样。
+- 代码：`sync.py` 的 `git init -b` / 分支校验 / `push` / `pull` 全部 `main → master`；
+  `seed_generation.sh`（4 处）与 `rotate-generation.sh`（3 处）的 `refs/heads/main → refs/heads/master`。
+- 文档：`origin/main`、`refs/heads/main`、默认分支表述、换代推送示例一并改；**Hermes 档名 `main`
+  （`sessions/main`、`state.db`）一律不动**——它跟 Git 分支只是同名，不是一回事。
+- 三个仓（技能仓 / 数据镜像 / build 副本）的分支都改名为 `master`；技能仓远端默认分支同步改，
+  旧的 `main` 分支删除（同 SHA 改名，不是改写历史）。
+
 ## 1.1.10 — 2026-11-01 · 可观测性补完（写到 report ≠ 进账本）
 
 - **`append_run` 是白名单**：1.1.9 把 `mem_avail_gb`/`mem_total_gb` 写进了 `report`，却没加进账本行的字段表
@@ -23,7 +33,7 @@
   此前这个键没人读，改了等于没改。
 - **文档对齐纯本机**：README 八处（同步=commit 不 push、gh 仅 `--push` 需要、恢复源是本机镜像、安全口径）；
   SKILL 九处（`gh` 仅 `--push` 适用、退出码补 3/7、`--allow-shrink` 同时放行批量删除闸、
-  自检项清单、`HEAD == origin/main` 改成「HEAD 即上一轮提交」、自检与全量审计不再要求 `ls-remote`）。
+  自检项清单、`HEAD == origin/master` 改成「HEAD 即上一轮提交」、自检与全量审计不再要求 `ls-remote`）。
 - **自检新增两项**：**运行副本一致性**（`HERMES_HOME/scripts` 与技能源逐个 sha256；`sync.py` 必须是 <4KB 的
   runpy 壳）、**psutil 可用性**；`自动同步调度` 增强为「在册 + 启用 + 无 guard/attention 标记 + 哨兵 15 分钟内跳过」。
 - **实测抓到并修好**：`restore_sessions.py` / `run_in_runtime.py` / `session_layout.py` 三份运行副本已陈旧，

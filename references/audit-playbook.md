@@ -69,5 +69,5 @@ git check-ignore -v local.json                                    # 机器本地
 
 1. 全部回归（或 `selfcheck.py` 一条命令）+ 一次全新克隆复跑；
 2. 版本号**最后**改，frontmatter 与提交信息一致；
-3. 推后 `git ls-remote origin refs/heads/main` 与本地 HEAD 比对；
+3. 推后 `git ls-remote origin refs/heads/master` 与本地 HEAD 比对；
 4. 镜像侧手维护件（README 等）的改动留给下一轮同步提交，不要手推。

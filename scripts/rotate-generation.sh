@@ -107,8 +107,8 @@ if [ -n "$DIRT" ]; then
   fi
 fi
 L=$(git -C "$MIRROR" rev-parse HEAD)
-# 用 refs/heads/main（HEAD 在部分传输/本地路径下可能不被广播，会误判"本地 != 远端"）
-R=$(git -C "$MIRROR" ls-remote origin refs/heads/main 2>/dev/null | cut -c1-40)
+# 用 refs/heads/master（HEAD 在部分传输/本地路径下可能不被广播，会误判"本地 != 远端"）
+R=$(git -C "$MIRROR" ls-remote origin refs/heads/master 2>/dev/null | cut -c1-40)
 if [ "$L" != "$R" ]; then
   echo "!! 本地($L) != 远端($R)：收口提交没推上去。"
   echo "   旧代远端会少这一个提交，但新代种子取的是工作树、内容不缺；继续。"
@@ -184,7 +184,7 @@ if [ "$KEEP_MIRROR" = 1 ]; then
 else
   git -C "$MIRROR" branch -f "$FROM-archive" main
 fi
-git -C "$MIRROR" update-ref refs/heads/main "$C"
+git -C "$MIRROR" update-ref refs/heads/master "$C"
 git -C "$MIRROR" remote set-url origin "$URL"
 echo "  origin -> $URL"
 git -C "$MIRROR" push -q -u origin main && echo "  ✓ 切换后推送正常"

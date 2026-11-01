@@ -24,7 +24,7 @@
    comm -23 old.txt new.txt | head        # 旧有新无 = 待判读
    comm -13 old.txt new.txt | wc -l       # 新增件
    ```
-   同时核 `git rev-parse --short HEAD` 与 `git ls-remote origin refs/heads/main` 是否一致。
+   同时核 `git rev-parse --short HEAD` 与 `git ls-remote origin refs/heads/master` 是否一致。
 2. **引用完整性**：活引用必须为零（`.bak-*` 历史备份不算）
    ```bash
    grep -n 'D:\\\\\|D:/' <HERMES_HOME>/config.yaml <HERMES_HOME>/cron/jobs.json

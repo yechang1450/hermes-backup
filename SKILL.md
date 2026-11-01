@@ -1,7 +1,7 @@
 ---
 name: hermes-backup
 description: Local git-mirror backup/restore of Hermes state (no cloud).
-version: 1.1.10
+version: 1.1.11
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -17,7 +17,7 @@ metadata:
 
 # hermes-backup — Hermes 数据备份 / 恢复
 
-> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **main**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/main` 看有没有远端新提交；有就 `git reset --hard origin/main` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/main:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。⑧**公开仓零本机痕迹**：脚本/测试里不得出现 `C:/Users/<名>` 这类绝对路径（既泄露用户名，又让测试换机即败）——一律按 `Path(__file__).resolve().parent` 拼；发布前用 `grep -rn "C:/Users/" scripts/` 扫一遍。⑨**文档里不写死可增长的数量**（几条坑 / 几套测试 / 几个场景 / 几个脚本）：每加一条就要回来改 SKILL、references、README 三处，漏改了也没人报错（实见同一份文档里「62 条」「8 套」「10 个场景」「9 套」四处同时过期）。要么写「以 `ls scripts/test-*.py | wc -l` 为准」，要么只给末行判据；能写死的只有能对回 `sync.py` 同一行的**代码常量**（分片阈值 / 超时 / 体积闸）。⑩**别把技能目录整份拷进暂存仓**——owner 与并行 agent 会直接改仓里的文件（实测：README 里新加的许可与权利声明被整份覆盖时静默回滚，还把他早删掉的 `LICENSE` 带了回去）；推前按 `git status` 只复制**你实际改过的那几个文件**，提交前 `git diff` 扫一眼有没有删掉别人的段落。
+> **维护笔记（发布前必读）**：①官方策展器会持续回写本技能文件（回写带 CRLF）；发布时把技能目录拷入暂存后先 `sed -i 's/\r$//'` 归一（git 的 `text=auto` 在提交侧也会归一 blob），再用「全新克隆 ↔ 暂存」逐字节比对核实——**判 CRLF 用 python 字节计数，不要用 MSYS grep（管道层会造假 CR）**。②公开仓默认分支为 **master**（`git push origin HEAD`）。③一致性四处：技能目录 ↔ 暂存 `temp/hcb-publish` ↔ 公开仓 ↔ 数据镜像 tools/。④改会话存储格式或恢复工具时，同步更新**镜像根 README** 的格式描述（该文件不被 sync 自动生成；手改后随下轮同步提交）。⑤**owner 会直接改公开仓**（如政策提交：删 LICENSE、`license: MIT → UNLICENSED`、README 改 Copyright 段）——推送前必 `git fetch` 并 `git log HEAD..origin/master` 看有没有远端新提交；有就 `git reset --hard origin/master` 再把本地的文件改动重放上去重新提交，**绝不 force / 绝不覆盖他的提交**。本仓的常态口径＝**无 LICENSE 文件**（保留所有权利）、frontmatter `license: UNLICENSED`；别再写回 MIT。⑥**可能有并行 agent 也在维护本技能**（2026-10-24/25 实见两笔既非 owner 也非本对话的提交：`restore_sessions --verify`、推送预算 900→1500s／外层 3300→3900s）——每次动手前 `git log --oneline -3` 看一眼，推前必 fetch，**只做增量、绝不回滚别人的提交**；改同一文件前先重读当前内容（技能目录可能已被对方改过）。⑦**版本号当最后一步改**：`SKILL.md` 的 `version:` 要在**提交前最后一次**写，并让提交信息里的版本号与它一致；提交后回读一次 `git show origin/master:SKILL.md | grep '^version'` 核对。多写者并行时很容易出现「0.4.22 的提交信息里装着 0.4.23 的内容」这种考古灾难——本次就因对方已把版本提到 0.4.23、我的 `sed 0.4.21→0.4.22` 静默不匹配而撞上。⑧**公开仓零本机痕迹**：脚本/测试里不得出现 `C:/Users/<名>` 这类绝对路径（既泄露用户名，又让测试换机即败）——一律按 `Path(__file__).resolve().parent` 拼；发布前用 `grep -rn "C:/Users/" scripts/` 扫一遍。⑨**文档里不写死可增长的数量**（几条坑 / 几套测试 / 几个场景 / 几个脚本）：每加一条就要回来改 SKILL、references、README 三处，漏改了也没人报错（实见同一份文档里「62 条」「8 套」「10 个场景」「9 套」四处同时过期）。要么写「以 `ls scripts/test-*.py | wc -l` 为准」，要么只给末行判据；能写死的只有能对回 `sync.py` 同一行的**代码常量**（分片阈值 / 超时 / 体积闸）。⑩**别把技能目录整份拷进暂存仓**——owner 与并行 agent 会直接改仓里的文件（实测：README 里新加的许可与权利声明被整份覆盖时静默回滚，还把他早删掉的 `LICENSE` 带了回去）；推前按 `git status` 只复制**你实际改过的那几个文件**，提交前 `git diff` 扫一眼有没有删掉别人的段落。
 
 把本机 Hermes 的全部状态（配置/凭据/记忆/技能/会话/桌面端数据）**线性同步**到一个
 **本机 git 镜像仓**（默认 `~/hermes-backup`；2026-10-31 起纯线下，不联网、不推 GitHub），并支持在任何新机上
@@ -76,7 +76,7 @@ metadata:
 
 > **自检只能跑技能目录那份**：`<REPO>/tools/selfcheck.py` 是**镜像里的旧副本**，它按「脚本所在目录的父目录」找 `scripts/test-*.py`，在镜像里只找到 `tools/` ⇒ 直接报 `scripts/ 下没有 test-*.py`、`0 套不能算通过`，还会连带把文档引用判成上百处悬空（引用的是技能目录才有的文件）。这是**位置错，不是回归**：判据＝输出里出现「scripts/ 下没有 test-*.py」时先看命令写的是 `<SKILL>/scripts/selfcheck.py` 还是 `<REPO>/tools/selfcheck.py`，换前者重跑；不要据此去补测试或改文档。
 
-> **补推要写对分支名**：数据镜像与公开技能仓都以 **`main`** 为默认分支。手工补推一律 `git push origin HEAD`（或显式 `HEAD:main`）；写成 `HEAD:master` 会在远端凭空多出一条同 SHA 的 `master`（`remote: Create a pull request for 'master'`）——默认分支没变、同步不受影响，但下次有人按 `ls-remote --heads` 对数会看不懂。发现已建出来时，确认它与 `main` 同 SHA 后删除即可（不是改写历史）。
+> **补推要写对分支名**：数据镜像与公开技能仓**都只有一个分支 `master`**。手工补推一律 `git push origin HEAD`（或显式 `HEAD:master`）；写成别的名字（如 `HEAD:main`）会在远端凭空多出一条同 SHA 的 `main`（`remote: Create a pull request for 'master'`）——默认分支没变、同步不受影响，但下次有人按 `ls-remote --heads` 对数会看不懂。发现已建出来时，确认它与 `master` 同 SHA 后删除即可（不是改写历史）。
 
 > **解释器与远端**：命令里的 `python` 要用 PATH 上的 Hermes python；**不要手拼 `tools/python-3.14.7+…` 的目录名**——真实目录名含被掩码的星号段，bash/subagent 里会被当字面量或通配，实测直接 `exit 127`。`sync.py` 会把 `origin` 改写成它解析出的 `REMOTE_URL`；若本机 HTTPS 到 GitHub 被 reset 而 SSH 可用，显式加 `--remote ssh://git@ssh.github.com:443/<owner>/<repo>.git`（预检也用同一 URL），否则会在 git pull/push 段失败。
 
@@ -89,7 +89,7 @@ metadata:
 1. `local.json` 的 `mirror` 写**真路径**——这是唯一该出现用户名的地方，它不进任何仓库。
 2. 代码默认值用 `Path.home() / "hermes-backup"`，**绝不写死 `C:/Users/<名>`**：写死了既泄用户名，又让公开仓的隐私扫描（`privacy-scan.py` 第三道）必红。
 3. 文档与示例一律 `~/hermes-backup`、`~/workspace`（Windows 即 `C:\Users\<你>\…`）。
-4. 新镜像若是「从旧盘拷过来的中间态」，先 `git fetch` 并对齐远端（`git reset --hard origin/main`），**别在落后的工作树上直接跑轮**。
+4. 新镜像若是「从旧盘拷过来的中间态」，先 `git fetch` 并对齐远端（`git reset --hard origin/master`），**别在落后的工作树上直接跑轮**。
 5. **点火一轮真同步验收**：日志头 `解析：mirror=<新路径>`、末行 `committed=True`（纯本机模式下 `pushed=None` 是**正常值**）、镜像 HEAD 比上一轮前进；只有显式 `--push` 的轮次才要求 `pushed=True` 且 `git ls-remote` 与本地 `HEAD` 一致。
 6. 记忆里写**一条全局映射**（旧路径 → 新路径）就够，比逐条改上百处便宜且不会漏。
 7. **重装/换机后重建两个 cron 任务，备份线才会真的跑。** 镜像仓、脚本、`local.json` 都在 **不等于**自动同步在跑：
@@ -154,7 +154,7 @@ metadata:
 - `scripts/check-parts.py` — 镜像分片形态体检（P1 编号连续 / P2 除末片外每片正好 PART_MAX / P3 末片合规 / P4 无形态混用；`PARTS-FAIL` 退出码 1）。改切片代码后用它验收「数据是否真的归位」
 - `scripts/audit-coverage.py` — 覆盖率审计：①会话层（镜像会话文件 vs 活库 state.db 逐会话条数）②文件层（`--with-files`：HERMES_HOME 顶层条目 vs 采集白名单，列出未分类/漏备项）；判据＝硬伤退出码 1
 - `scripts/rotate-generation.sh` — 数据仓换代（**分批种子**推到新代私有仓 → 旧仓归档；`--dry-run` 只打印计划；幂等可续跑）。锁**判活**用 psutil（MSYS 的 `kill -0` 看不到原生 Windows 进程，会把活锁当死锁）；工作树有改动时不硬退——桌面端 leveldb 一直在写，永远等不到“干净”，真跑先提交收口（并尝试推送一次）再换代
-- `scripts/seed_generation.sh` — 换代种子：整轮**钉住开始时的 `BASE` commit**（分批／组树／计数全读 `BASE`，不碰工作树），每批 `read-tree "$BASE"` + `update-index --force-remove -z --stdin` 反向删掉本批之外的路径，第 i 棵树＝前 i 批的**并集**（累积），分批 push（每批 ≤800MB，绕开单次 2GB 上限），末树必须等于 `BASE^{tree}`；可单独对本地裸库自测（第二遍应为 **no-op**）；校验只认 `refs/heads/main`。历史老写法（按 `ls-files` 名单 `git add`）**已被真实环境否掉**，见 pitfalls ④⑤⑥
+- `scripts/seed_generation.sh` — 换代种子：整轮**钉住开始时的 `BASE` commit**（分批／组树／计数全读 `BASE`，不碰工作树），每批 `read-tree "$BASE"` + `update-index --force-remove -z --stdin` 反向删掉本批之外的路径，第 i 棵树＝前 i 批的**并集**（累积），分批 push（每批 ≤800MB，绕开单次 2GB 上限），末树必须等于 `BASE^{tree}`；可单独对本地裸库自测（第二遍应为 **no-op**）；校验只认 `refs/heads/master`。历史老写法（按 `ls-files` 名单 `git add`）**已被真实环境否掉**，见 pitfalls ④⑤⑥
 - `references/backup-scope.md` — **备份范围唯一权威表**（进/不进、原因、怎么改、改完跑什么）；其他文档只许指向它
 - `references/operations.md` — **日常运维一页纸**（每天 30 秒看什么 / 每周跑什么 / 什么信号该动手 / 告警怎么接到人）
 - `CHANGELOG.md` — 版本演进与「踩过的坑怎么修的」
@@ -222,7 +222,7 @@ metadata:
 
 **`local.json` 里的 mirror/repo 不能直接信**：它可能是上一次没做完的换代留下的（镜像指向一个根本不是 git 仓的目录、仓名在远端不存在）。判据三条：该目录存在且 `git -C <mirror> rev-parse` 成功、`git remote -v` 有 origin、`gh repo view <owner>/<repo>` 能查到。三条有任一不成立，就以**现存的真仓**为准改回 `local.json`，别顺着它去 `--create-remote` 新建一个空仓。
 
-**`--allow-shrink` 之前先证可回滚**：`git ls-tree -r HEAD --name-only sessions/<档> | wc -l` 数出该档在 HEAD 里的文件数，并确认 `HEAD` 就是上一轮提交（纯本机模式没有 origin，别去找 `origin/main`）；建议先打一个可回取分支
+**`--allow-shrink` 之前先证可回滚**：`git ls-tree -r HEAD --name-only sessions/<档> | wc -l` 数出该档在 HEAD 里的文件数，并确认 `HEAD` 就是上一轮提交（纯本机模式没有 origin，别去找 `origin/master`）；建议先打一个可回取分支
 `git branch -f pre-<机器>-takeover HEAD`。prune 只动工作树，历史仍可 `git show <sha>:sessions/<档>/<sid>.jsonl` 单条取回——这是「用本机现状覆盖镜像」可接受的前提，也是给用户解释「删了什么、怎么找回」的依据。
 
 **发现工作树已经被误 prune（还没提交）时，整体回滚只要一条命令**：`git -C <镜像> checkout -- .` —— 已跟踪文件全部还原（实测 1.5 万个文件 4 秒，`D` 9839→0、`M` 168→0），**未跟踪的新文件原样保留**，而那正是本轮刚导出的增量。判据：`git status --porcelain` 的分组从 `D/M/??` 变成只剩 `??`。**别用 `git reset --hard`**（连未跟踪增量一起丢）、也别 `git clean`。回滚后先 `find <层> -type f | wc -l` 复核对得上 HEAD，再决定要不要重跑。这条路径救过一次 8,284 个 profile 文件的清空——prune 在采集阶段就跑完了，而提交在它之后，**中间这段窗口是可逆的**。
@@ -410,10 +410,10 @@ metadata:
   同理，`state/hb-sync-runs.jsonl` 里 `committed`/`pushed` 为 `null` 的行是**让路/空转轮**，不是失败——
   别把它们统计进失败率。碰上别人正在跑时**不要杀它、不要删锁**，等它收工再按上面三条验收；
   同一台机上常有另一个会话在做同一件事（换机后的「跑通」任务尤其容易撞）。
-- **stdout 末尾没有「sync 完成」不等于失败**：输出被 `| tail` 或包装器截断时，最后一行可能停在「git 推送完成」。以 `state/hb-sync-runs.jsonl` 的 `finished_at` / `pushed` 与 `git rev-parse HEAD == git ls-remote origin refs/heads/main` 为准；不要因为日志尾缺失就重跑一轮。
+- **stdout 末尾没有「sync 完成」不等于失败**：输出被 `| tail` 或包装器截断时，最后一行可能停在「git 推送完成」。以 `state/hb-sync-runs.jsonl` 的 `finished_at` / `pushed` 与 `git rev-parse HEAD == git ls-remote origin refs/heads/master` 为准；不要因为日志尾缺失就重跑一轮。
 - **验收必须在与 cron 相同的环境里跑，不许给自己加戏。** 用 `GIT_CONFIG_*` / `http.curloptResolve`
   把 `github.com` 钉到某个 IP、或临时挂代理之后跑通的同步，**证明不了 cron 能跑**——cron 的包装器
-  不带你这些变量。先裸跑一次（`git ls-remote origin refs/heads/main` + `ssh -T git@github.com` 各一条就够判
+  不带你这些变量。先裸跑一次（`git ls-remote origin refs/heads/master` + `ssh -T git@github.com` 各一条就够判
   网络与凭据），失败就把原文错误贴出来分类（认证 / DNS / 443 被拦），别自己发明绕路。
 - **每轮结构化记录**：`$HERMES_HOME/state/hb-sync-runs.jsonl` 一行一轮（时长／分段耗时 collect·export·git／退出码／committed·pushed／字节数）——追轮次历史、算成功率与分段成本先读它；连续失败计数在 `state/hb-sync-health.json`，≥3 轮失败写 `state/hb-sync-needs-attention` 标记（不推送、不打扰，成功一轮自动清）。
 - 恢复后：置顶对话在；微信/QQ 发消息能续接旧线程；群聊记录在；各档 `hermes -p <档> sessions stats` 数量与备份一致；主档出词正常（provider 可用）。

@@ -104,7 +104,7 @@ HEAD_TREE="$(git -C "$MIRROR" rev-parse "$BASE^{tree}")"
 [ "$FINAL_TREE" = "$HEAD_TREE" ] || {
   echo "!! 组装出的树($FINAL_TREE) != 快照点的树($HEAD_TREE)——拒绝继续（会推出残树）"; exit 1; }
 
-R_SHA=$(git -C "$MIRROR" ls-remote "$URL" refs/heads/main 2>/dev/null | cut -f1)
+R_SHA=$(git -C "$MIRROR" ls-remote "$URL" refs/heads/master 2>/dev/null | cut -f1)
 R_TREE=""
 if [ -n "$R_SHA" ]; then
   R_TREE=$(git -C "$MIRROR" rev-parse "$R_SHA^{tree}" 2>/dev/null || true)
@@ -145,7 +145,7 @@ for BF in "$BATCHDIR"/batch-*.txt; do
     C=$(git -C "$MIRROR" commit-tree "$T" -p "$PREV" -m "seed batch $i")
   fi
   T0=$(date +%s)
-  if ! git -C "$MIRROR" push -q "$URL" "$C:refs/heads/main" 2>"$BATCHDIR/push-$i.err"; then
+  if ! git -C "$MIRROR" push -q "$URL" "$C:refs/heads/master" 2>"$BATCHDIR/push-$i.err"; then
     echo "!! 批 $i 推送失败：$(head -2 "$BATCHDIR/push-$i.err")"
     exit 1
   fi
@@ -161,11 +161,11 @@ N_MIRROR=$(git -C "$MIRROR" ls-tree -r "$BASE" --name-only | wc -l)
 [ "$(git -C "$MIRROR" rev-parse "$COMMIT^{tree}")" = "$HEAD_TREE" ] || {
   echo "!! 最终提交的树 != 快照点的树"; exit 1; }
 
-# 用 refs/heads/main 而不是 HEAD：本地路径/部分传输下 HEAD 不被广播，会返回空（2026-10-25 实案：
+# 用 refs/heads/master 而不是 HEAD：本地路径/部分传输下 HEAD 不被广播，会返回空（2026-10-25 实案：
 # 5 批推送全成功，却在这里误报「远端 HEAD() != 最后提交」并退出 1）
 R=""
 for _try in 1 2 3; do
-  R=$(git -C "$MIRROR" ls-remote "$URL" refs/heads/main 2>/dev/null | cut -c1-40)
+  R=$(git -C "$MIRROR" ls-remote "$URL" refs/heads/master 2>/dev/null | cut -c1-40)
   [ -n "$R" ] && break
   sleep 2
 done

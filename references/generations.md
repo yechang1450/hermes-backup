@@ -60,7 +60,7 @@ git -C ~/hermes-backup gc --quiet
 gh repo create <owner>/hermes-backup-2026q4 --private
 # 3) 从镜像推一份全量到新仓
 git -C ~/hermes-backup remote add gen2 git@github.com:<owner>/hermes-backup-2026q4.git
-git -C ~/hermes-backup push -u gen2 main
+git -C ~/hermes-backup push -u gen2 master
 # 4) 校验：远端 HEAD 与本地一致；另起干净目录克隆抽查（文件数 + 恢复冒烟）
 git -C ~/hermes-backup ls-remote gen2 HEAD
 # 5) 切默认：把 mirror 的 origin 指向新仓 + 同步脚本默认 repo-name 改为新名

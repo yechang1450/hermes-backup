@@ -1439,7 +1439,7 @@ def ensure_repo(need_remote: bool = True) -> None:
     否则每轮都会把已删除的远端地址重新写回 origin，留下 refs/remotes/origin/HEAD 全零指针。"""
     if not (MIRROR / ".git").exists():
         log("git init")
-        git("init", "-b", "main")
+        git("init", "-b", "master")
         git("config", "user.name", GIT_NAME or "hermes-backup")
         if GIT_EMAIL:
             git("config", "user.email", GIT_EMAIL)
@@ -1532,8 +1532,8 @@ def commit_and_push(message: str, no_push: bool, allow_shrink: bool = False) -> 
         result["pushed"] = None
         return result
     branch = git("rev-parse", "--abbrev-ref", "HEAD", check=False).stdout.strip()
-    if branch and branch != "main":
-        raise RuntimeError(f"当前分支是 {branch} 而不是 main：提交会推到别处（push 固定推 origin main）")
+    if branch and branch != "master":
+        raise RuntimeError(f"当前分支是 {branch} 而不是 master：提交会推到别处（push 固定推 origin master）")
     t1 = time.time()
     # 推送：最多 3 次（真实失败模式是 GitHub 侧「传输超 ~6–8 分钟即掐断」与 fake-ip 偶发 RST，
     # 两者都是瞬态、重试可过）。每次失败先 pull --no-rebase 对齐线上（非破坏，冲突即中止），
@@ -1541,14 +1541,14 @@ def commit_and_push(message: str, no_push: bool, allow_shrink: bool = False) -> 
     attempts = 3
     last_err = ""
     for attempt in range(1, attempts + 1):
-        p = git("push", "-u", "origin", "main", check=False, timeout=PUSH_TIMEOUT)
+        p = git("push", "-u", "origin", "master", check=False, timeout=PUSH_TIMEOUT)
         if p.returncode == 0:
             break
         last_err = (p.stderr or p.stdout).strip()
         log(f"push 失败（第 {attempt}/{attempts} 次）：{last_err[:200]}")
         if attempt == attempts:
             raise RuntimeError(f"push 失败（{attempts} 次均失败）：{last_err[:400]}")
-        pull = git("pull", "--no-rebase", "origin", "main", check=False, timeout=600)
+        pull = git("pull", "--no-rebase", "origin", "master", check=False, timeout=600)
         if pull.returncode != 0:
             git("merge", "--abort", check=False)
             raise RuntimeError(f"pull/merge 失败：{(pull.stderr or pull.stdout).strip()[:400]}")

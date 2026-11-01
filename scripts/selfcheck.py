@@ -39,7 +39,7 @@ EXTERNAL_NAMES = {
 
 def run(cmd: list[str], timeout: int = 300) -> tuple[int, str]:
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=str(ROOT))
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, cwd=str(ROOT))
         out = (p.stdout or "") + (p.stderr or "")
         last = next((ln.strip() for ln in reversed(out.strip().splitlines()) if ln.strip()), "")
         return p.returncode, last
@@ -85,7 +85,7 @@ def compile_all(results: list) -> None:
     for f in sorted(HERE.glob("*.py")):
         if f.name == "selfcheck.py":
             continue
-        p = subprocess.run([PY, "-m", "py_compile", str(f)], capture_output=True, text=True)
+        p = subprocess.run([PY, "-m", "py_compile", str(f)], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode != 0:
             bad.append((f.name, (p.stderr or "").strip().splitlines()[-1:]))
     step("编译全部脚本", 0 if not bad else 2, f"{len(list(HERE.glob('*.py'))) - 1} 个文件" if not bad else str(bad[:2]), results)
@@ -276,7 +276,7 @@ def preserve_check(repo: str, results: list) -> None:
     lost = []
     for name, expect in sorted(base.items()):
         out = subprocess.run(["git", "-C", repo, "ls-files", f"sessions/{name}"],
-                             capture_output=True, text=True)
+                             capture_output=True, text=True, encoding="utf-8", errors="replace")
         cur = len([x for x in (out.stdout or "").splitlines() if x.strip()])
         if cur < int(expect):
             lost.append(f"{name} {cur}/{expect}")
@@ -300,7 +300,7 @@ def coverage_audit(repo: str, home: str, results: list) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--repo", default="", help="镜像仓目录（给了才跑分片体检与覆盖率审计）")
+    ap.add_argument("--repo", default="", help="镜像仓目录（给了才跑退役档完整性 + 分片体检；覆盖率审计还要再加 --audit）")
     ap.add_argument("--home", default="", help="活库 HERMES_HOME（默认按环境变量/标准位置推断）")
     ap.add_argument("--audit", action="store_true",
                     help="额外跑会话层覆盖率审计（读全部会话文件，2–5 分钟；需要 --repo）")

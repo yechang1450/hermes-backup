@@ -1,3 +1,14 @@
+## 1.1.10 — 2026-11-01 · 可观测性补完（写到 report ≠ 进账本）
+
+- **`append_run` 是白名单**：1.1.9 把 `mem_avail_gb`/`mem_total_gb` 写进了 `report`，却没加进账本行的字段表
+  ⇒ 真跑一轮（12:07，286.5s/exit 0）账本里仍是 `null`。**教训：新增观测字段必须同时改 `append_run`**，
+  否则「写了但看不到」比没写更误导。已补齐，并用函数级用例验证落盘。
+- **子进程统一编码**：`text=True` 未指定 encoding 时按 cp936 解码，遇到非 GBK 字符（emoji）会 `UnicodeDecodeError`。
+  `sync.py` 11 处、`selfcheck.py` 3 处补 `encoding="utf-8", errors="replace"`。
+- **日志口径**：纯本机轮不再打印推导出来的 `remote=git@github.com:...`（仓里根本没有 origin，读了会误判），
+  改打 `mode=local-only remote=(纯本机，本轮不推)`。
+- **`selfcheck --repo` 的 help** 与行为对齐（分片体检/退役档完整性；覆盖率还要 `--audit`）。
+
 ## 1.1.9 — 2026-11-01 · 三路审计（文档/运行时/AMD 适配）后的整批修复
 
 审计共 41 条（高 4 / 中 12 / 低 25），本次修掉其中**可动代码与文档的全部**：

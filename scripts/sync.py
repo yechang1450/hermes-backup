@@ -160,7 +160,7 @@ def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: s
     owner, repo, url = "", (repo_name or _skill_config().get("repo") or "hermes-backup"), ""
     if (mirror / ".git").exists():
         p = subprocess.run(["git", "-C", str(mirror), "remote", "get-url", "origin"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         if p.returncode == 0 and p.stdout.strip():
             url = p.stdout.strip()
             slug = _parse_slug(url)
@@ -177,7 +177,7 @@ def resolve_identity(mirror: Path, owner_arg: str, repo_name: str, remote_arg: s
         gh = _gh_exe()
         if gh:
             p = subprocess.run([gh, "api", "user", "--jq", ".login"],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, encoding="utf-8", errors="replace")
             if p.returncode == 0 and p.stdout.strip():
                 owner = p.stdout.strip()
     if not url and owner:
@@ -671,11 +671,11 @@ def ensure_private(report: dict, allow_unverified: bool = False) -> bool:
     if not gh:
         return _unverifiable("gh 不可用，无法验证私有性")
     p = subprocess.run([gh, "api", f"repos/{slug}", "--jq", ".private"],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode != 0:
         time.sleep(2)
         p = subprocess.run([gh, "api", f"repos/{slug}", "--jq", ".private"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode != 0:
         # 2026-10-26 实案：日志只有「私有性查询失败： ——」，因为 gh 网络失败时 stderr 是空的。
         # 一律带上 rc 与可见输出，否则下一次没人知道是网络、凭据还是仓库名错。
@@ -687,7 +687,7 @@ def ensure_private(report: dict, allow_unverified: bool = False) -> bool:
     log("!! 仓库不是私有！尝试改回私有…")
     fix = subprocess.run([gh, "repo", "edit", slug, "--visibility", "private",
                           "--accept-visibility-change-consequences"],
-                         capture_output=True, text=True)
+                         capture_output=True, text=True, encoding="utf-8", errors="replace")
     if fix.returncode == 0:
         report["private_check"] = "非私有→已改回私有"
         log("已改回私有，继续推送")
@@ -942,7 +942,7 @@ def _count_mirror_sessions(mirror: Path) -> dict[str, int]:
     if (mirror / ".git").exists():
         try:
             p = subprocess.run(["git", "-C", str(mirror), "ls-tree", "-r", "--name-only", "HEAD",
-                                "--", "sessions/"], capture_output=True, text=True, timeout=120)
+                                "--", "sessions/"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
             if p.returncode == 0:
                 head: dict[str, set[str]] = {}
                 for line in p.stdout.splitlines():
@@ -1065,7 +1065,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         try:
             bp = subprocess.Popen([sys.executable, str(runner), str(helper),
                                    "--home", str(HERMES_HOME), "--out", str(rawdir)],
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
             # 导出阶段：**不设固定墙钟**，按「有没有进展」判。
             # 机器被别的活占满时，同一次导出能从 210s 涨到 1200s+（2026-10-26 实案：11:20 轮撞
             # 1200s 硬预算被掐 → 回退逐档 CLI → 整轮 48 分钟）；反过来，真卡死时它一个字节都不写。
@@ -1156,7 +1156,7 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         cmd = [exe] + (["-p", profile] if profile else []) + \
               ["sessions", "export", "--format", "jsonl", str(raw)]
         t0 = time.time()
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=900)
         out = (p.stdout or "") + "\n" + (p.stderr or "")
         skipped = sorted(set(re.findall(r"Session '([0-9A-Za-z_]+)' has more than", out)))
         entry: dict = {"ok": p.returncode == 0, "rc": p.returncode, "sessions": 0,
@@ -1390,7 +1390,7 @@ def _reap_orphan_git() -> list[int]:
 
 def git(*args: str, check: bool = True, timeout: float | None = None) -> subprocess.CompletedProcess:
     proc = subprocess.Popen(["git", "-C", str(MIRROR), *args], stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, env=_git_env())
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", env=_git_env())
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -1568,12 +1568,12 @@ def _maybe_create_remote(enabled: bool) -> None:
         log("!! --create-remote 需要 gh，跳过")
         return
     slug = f"{GH_OWNER}/{GH_REPO}"
-    p = subprocess.run([gh, "repo", "view", slug], capture_output=True, text=True)
+    p = subprocess.run([gh, "repo", "view", slug], capture_output=True, text=True, encoding="utf-8", errors="replace")
     if p.returncode == 0:
         return
     log(f"远端不存在，创建私有仓 {slug} …")
     cr = subprocess.run([gh, "repo", "create", slug, "--private"],
-                        capture_output=True, text=True)
+                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     if cr.returncode == 0:
         log(f"已创建私有仓 {slug}")
     else:
@@ -1630,8 +1630,13 @@ def main() -> int:
     t0 = time.time()
     MIRROR = resolve_mirror(args.mirror)
     resolve_identity(MIRROR, args.owner, args.repo_name, args.remote)
-    log(f"解析：mirror={MIRROR} owner={GH_OWNER or '(未解析)'} "
-        f"remote={REMOTE_URL or '(未解析)'}")
+    _mode_txt = str(_skill_config().get("mode") or "local-only")
+    if args.no_push:
+        # 纯本机轮：REMOTE_URL 只是推导值，仓里并没有配 origin——直接打出来会被读成「远端已配好」
+        log(f"解析：mirror={MIRROR} mode={_mode_txt} remote=(纯本机，本轮不推)")
+    else:
+        log(f"解析：mirror={MIRROR} mode={_mode_txt} owner={GH_OWNER or '(未解析)'} "
+            f"remote={REMOTE_URL or '(未解析)'}")
     if MIRROR.exists() and not MIRROR.is_dir():
         # 此时 report 还没建：只打可读错误并退出，别引用未定义变量（2026-10-26 自查踩到 UnboundLocalError）
         log(f"!! --mirror 指向的是文件而不是目录：{MIRROR}")
@@ -1852,6 +1857,9 @@ def append_run(report: dict, t0: float, exit_code: int) -> None:
             "committed": report.get("committed"),
             "pushed": report.get("pushed"),
             "aborted": report.get("aborted"),
+            "mem_avail_gb": report.get("mem_avail_gb"),
+            "mem_total_gb": report.get("mem_total_gb"),
+            "memory_gate_unavailable": report.get("memory_gate_unavailable"),
             "git_error": (report.get("git_error") or "")[:200],
             "via": ("bulk" if any(e.get("via") == "bulk" for e in exports.values()) else "cli"),
         }

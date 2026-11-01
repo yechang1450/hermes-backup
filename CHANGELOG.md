@@ -1,3 +1,39 @@
+## 1.1.12 — 2026-11-01 · 三路审计后修 P0（冷启动 / 运行链路 / 恢复链）
+
+三路并行审计（干净克隆冷启动、自动化链路、恢复链）共 30+ 条，本轮先修会让用户跑不起来、
+会丢数据、会让故障静默的那批：
+
+**冷启动**
+- `README` 的 `hermes skills install` 地址还写着 `main`（分支已统一为 `master`）⇒ 照抄必 404。
+- `start-finish-restore.ps1` 硬依赖 PowerShell 7（`Get-Command pwsh -ErrorAction Stop`），全新 Windows
+  只有 5.1 ⇒ 恢复卡在最后一步。改为 `pwsh` 缺失时回退 `powershell`。
+
+**运行链路**
+- `rotate-generation.sh` 还残留 3 处 `main`（push / 归档分支 / 切换后推送）⇒ 换代必挂或静默漏推。
+- shrink-guard 静默期 24h → **6h**（条件已修复也要等一整天，实案压了 4 小时）。
+- 锁只有 pid 判活 → 加 `LOCK_MAX_AGE_SECONDS=3h` 硬上限（pid 复用会造成永久活锁）。
+- `--collect-only` 也写健康账本 ⇒ 一次 5.9s 的旁路轮把 `consecutive_failures` 清零、删掉 needs-attention。
+  现在这种轮只记 runs 行，不进健康账本。
+- exit 5（个别档导出失败）原本先写成功 meta、先清 guard 标记 ⇒ 哨兵以为刚同步成功。改为先判失败再记账。
+
+**恢复链**
+- `RESTORE.md` 的 `$HB="$HOME/hermes-backup"` 在 Hermes bash 里展开成 `/c/Users/...`，而 MSYS 路径转换是关的
+  ⇒ `python "$HB/tools/..."` 直接 `can't open file 'C:\c\Users\...'`，整链第一步就死。改用 `cygpath -m`。
+- 第 1 步 clone 到镜像本机路径会撞 `destination path already exists`；补「镜像已在本机 → 跳过 clone」。
+- 第 2 步覆盖层含 30+ 个 SQLite，网关在跑时覆盖会撕裂 WAL ⇒ 补「先停网关」与挪开 `.db` 的处置。
+- 第 3 步 `--all` 会把 16 个退役 bot 档的 1,300+ 会话整体灌回活库，原文零警示 ⇒ 补警示与
+  「默认 `--profile main`」的正确做法。
+- §7 原本说「重启后自动同步自行继续」⇒ 补「验收前先 pause 两个 cron」。
+
+**自检**
+- 运行副本一致性按原始字节比 sha256，Windows 上 CRLF 与仓里 LF 不同 ⇒ 健康安装永久判红。改为 EOL 归一后比。
+- 「自动同步调度」在未装 cron 的全新环境必红、「退役档完整性」在没有 `local.json` 的干净克隆必红
+  ⇒ 两者改为「缺件即跳过并说明原因」。
+
+**未修（需要设计决策，已记录）**：失败摘要 `deliver: local` 不会通知到人；`home-overlay` 的 prune 没有
+shrink 保护；`snapshot_sqlite` 失败返回值未检查；`dump_routing` 失败被吞；内部预算（push 3×1500s、
+导出 3600s）大于包装器 1800s。
+
 ## 1.1.11 — 2026-11-01 · 分支统一为 master（一仓一分支）
 
 - 主人口径：**一个项目＝一个 git 仓＝一个 `master` 分支**，线上线下都一样。

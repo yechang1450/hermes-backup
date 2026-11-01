@@ -29,7 +29,16 @@ if (-not (Test-Path -LiteralPath $fin)) {
   exit 2
 }
 
-$exe = (Get-Command pwsh -ErrorAction Stop).Source
+# 全新 Windows 只带 5.1（Hermes 不自带 pwsh）——这里不能硬依赖 PS7，缺了就回退。
+$exe = $null
+foreach ($cand in @('pwsh', 'powershell')) {
+  $g = Get-Command $cand -ErrorAction SilentlyContinue
+  if ($g) { $exe = $g.Source; break }
+}
+if (-not $exe) {
+  [Console]::Error.WriteLine('既没有 pwsh 也没有 powershell，无法拉起收尾器')
+  exit 2
+}
 $cmd = '"' + $exe + '" -NoProfile -File "' + $fin + '" -Repo "' + $Repo + '"'
 
 if ($DryRun) {

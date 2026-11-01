@@ -25,7 +25,7 @@ CHILD_LOG = HOME / "state" / "hb-sync-child.log"
 GUARD_EXIT = 6               # sync.py 的 shrink guard：活库比备份少太多 ⇒ 拒绝同步（新机/未恢复）
 MASS_DELETE_EXIT = 7         # sync.py 的批量删除闸：按失败处理（不是 guard，不许静默）
 GUARD_MARKER = HOME / "state" / "hb-sync-guard-blocked.json"
-GUARD_QUIET_S = 24 * 3600    # 拦下后静默一天（配置问题，重试无意义）
+GUARD_QUIET_S = 6 * 3600   # 撞过 shrink guard 后每 6 小时允许重试一次（原 24h 会把条件已修复的情况也压一整天）    # 拦下后静默一天（配置问题，重试无意义）
 
 
 def _kill_tree(pid: int) -> int:

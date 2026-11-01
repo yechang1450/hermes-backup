@@ -17,7 +17,11 @@
 **先设一个变量，后面所有命令都用它**（git-bash；`$HOME` 在 Windows 上就是 `C:/Users/<你>`）：
 
 ```bash
-export HB="$HOME/hermes-backup"
+# ⚠️ 必须是 **Windows 形态**（C:/...）。Hermes 的 bash 关掉了 MSYS 路径转换
+# （MSYS2_ARG_CONV_EXCL=* / MSYS_NO_PATHCONV=1），`/c/Users/...` 传给 python/git/pwsh
+# 会被当成「当前盘符下的相对路径」——实测 `python "$HB/tools/check-parts.py"`
+# 报 can't open file 'C:\c\Users\...'，整条恢复链第一步就死。
+export HB="$(cygpath -m "$HOME/hermes-backup")"   # 得到 C:/Users/<你>/hermes-backup
 ```
 
 > ⚠️ **路径写法铁律**：bash 里一律用**正斜杠**。写成 `~/hermes-backup\tools\restore_files.py`
@@ -49,6 +53,10 @@ proj-83 140 / 28,665；proj-81 169 / 27,706；其余 11 档各 10–35 会话。
 - 本机 Hermes 已至少启动过一次（`%LOCALAPPDATA%\hermes\` 骨架存在，含 `hermes-agent/` 与 `bin/`）。
 
 ## 1. 克隆备份仓
+
+> **纯本机模式（镜像就在这台机器上，如 `~/hermes-backup`）**：**跳过克隆**——直接把 `HB` 指过去即可；
+> clone 到同一个路径会报 `destination path already exists and is not an empty directory`。
+> 只有镜像在别的盘/别的机器上时，才用下面的 clone（先拷贝到本机，再 clone 或直接复制目录）。
 
 **两种克隆方式，按需要选：**
 
@@ -85,6 +93,9 @@ python "$HB/tools/run_in_runtime.py" "$HB/tools/restore_files.py" --repo "$HB" -
 python "$HB/tools/run_in_runtime.py" "$HB/tools/restore_files.py" --repo "$HB" --create
 ```
 - 默认覆盖 `home-overlay/` → `%LOCALAPPDATA%\hermes\`，`profiles-overlay/<档>/` → `profiles\<档>\`。
+- ⚠️ **覆盖层里有 30+ 个 SQLite 库**（`kanban/boards/*/kanban.db`、`projects.db`、`shared-state.db`、`cron/*.db`、
+  各档 `projects.db`）。网关/桌面端在跑时覆盖会撕裂 WAL（页缓存与文件分叉、`quick_check` 可能报 malformed）。
+  **先停网关（`hermes gateway stop`）再跑这一步**；实在不能停就先把这些 `.db`/`-wal`/`-shm` 挪开，只恢复非库文件。
 - 目标 `HERMES_HOME` 不存在时会**拒绝**；新机请先启动一次 Hermes 生成骨架。
 - 被覆盖的旧文件自动备份到 `restore-out\pre-restore-backup\`（要回滚从这里拿）。
 - 完成标准：输出「覆盖 N 文件」且无报错；`HERMES_HOME\memories\MEMORY.md`、`config.yaml`、`.env` 已就位（重启后生效）。
@@ -108,6 +119,15 @@ python "$HB/tools/run_in_runtime.py" "$HB/tools/check-paths.py" --home "$LOCALAP
 - 改完要**重启 Hermes** 才生效（配置在进程启动时读取）。
 
 ## 3. 恢复会话层（全部历史对话）
+
+> ⚠️ **`--all` 会把镜像里每一个档都灌回活库**。镜像通常还留着**已退役的 bot 档**（ceo / proj-80… / 三省的
+> 五席等，合计上千个会话）：本机 `profiles/` 是空的，`--all` 会凭空造出 16 个 `state.db` 并把它们的会话
+> 全部复活。退役是既定决定，**不是"数据丢了"**。正确做法：
+> - 只恢复 default 一档：`--profile main`（**推荐**）；
+> - 确要恢复某档：`--profile <档名>` 逐个来；
+> - `--all` 只给"整机换新、连 bot 一起要"的场景。
+> 想长期留着它们的档案但不复活：技能 `local.json` 里写 `preserve_sessions`（清单一栏），
+> 备份侧就会原样保留、活库侧不导入。
 
 ```bash
 python "$HB/tools/run_in_runtime.py" "$HB/tools/restore_sessions.py" \
@@ -184,7 +204,10 @@ PY
 ## 7. 收尾
 
 - 恢复完成 = 本机成为线上版本的后代：此后 `python <技能目录>/scripts/sync.py` 继续日常同步。
-- 自动同步：备份内含 `home-overlay/scripts/hb-*.py`，且 `cron/` 任务随备份恢复——重启后自动同步会自行继续；若备份来自旧版本，按技能 `references/auto-sync.md`「安装」节补装。
+- 自动同步：备份内含 `home-overlay/scripts/hb-*.py`，且 `cron/` 任务随备份恢复——重启后自动同步会自行继续；
+  若备份来自旧版本，按技能 `references/auto-sync.md`「安装」节补装。
+  ⚠️ **验收完成前先把它停住**：`hermes cron pause <哨兵id>` + `hermes cron pause <周期id>`
+  （否则重启后 2 分钟内哨兵就可能跳一轮，把"还没导入完的缺口"当成残留 prune 掉）。验收通过再 resume。
 - 若本机在恢复前产生了新数据：先 `git pull` 合并再同步；同名冲突 = 线上优先、本地另存（人工裁决）。
 
 ---

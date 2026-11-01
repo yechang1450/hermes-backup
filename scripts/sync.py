@@ -199,6 +199,7 @@ PART_MAX = 12 * 1024 * 1024             # 会话分片阈值（0.4.26 由 45MB �
 
 LOCK_FILE = HERMES_HOME / "state" / "hermes-backup-sync.lock"
 LOCK_STALE_SECONDS = 1 * 3600   # 2026-11-01：本机实测单轮 88–459s，3h 会让真卡死堵住 3 小时           # 兜底：无法核实持有者时的陈旧锁窗口（正常由 pid 存活判定立即接管）
+LOCK_MAX_AGE_SECONDS = 3 * 3600   # 单轮最长 3 小时；超过即视为死锁强制接管
 
 EXCLUDE_PATTERNS = ("*.lock", "*.pid", "*-wal", "*-shm", "*~", "Thumbs.db", "desktop.ini", "*.pyc")
 # .git 必须排除：技能目录本身是 git 仓，整目录拷进镜像会让 git 把该路径记成
@@ -289,6 +290,10 @@ def acquire_lock() -> bool:
             holder = 0
         if holder and not _pid_alive(holder):
             log(f"锁持有者进程 {holder} 已不存在——立即接管（免等陈旧窗）")
+        elif age > LOCK_MAX_AGE_SECONDS:
+            # 2026-11-01 审计：只按 pid 判活，持锁进程被杀后 pid 一旦被系统复用给常驻进程，
+            # 锁就永远「活着」，两个包装器都判 ok，账本零行——无限期静默停摆。
+            log(f"锁年龄 {int(age)}s 超过硬上限 {LOCK_MAX_AGE_SECONDS}s——强制接管（防 pid 复用造成活锁）")
         elif age < LOCK_STALE_SECONDS:
             log(f"已有另一轮同步在进行（锁年龄 {int(age)}s）——本轮退出，让路")
             return False
@@ -1732,7 +1737,7 @@ def main() -> int:
         log(f"采集完成（collect-only）：总量 {total/1048576:.1f}MB")
         # 只采集不是一次成功同步：别写 finished_at（否则哨兵会以为刚同步过、把 overdue 重置）
         write_meta(report, t0, success=False)
-        append_run(report, t0, 0)
+        append_run(report, t0, 0, count_health=False)
         return 0
 
     if not args.no_push:
@@ -1766,6 +1771,14 @@ def main() -> int:
 
     report["finished_at"] = datetime.now().astimezone().isoformat()
     report["duration_seconds"] = round(time.time() - t0, 1)
+    # 有档导出失败时**不能**写成功 meta、也不能清 guard 标记：那会让哨兵的 20 分钟新鲜度闸
+    # 与 2.5h 兜底都以为「刚同步成功」，把部分失败掩盖掉（2026-11-01 审计）。
+    if report.get("failed_profiles"):
+        report["aborted"] = "profile_export_failed: " + ",".join(report["failed_profiles"])
+        write_meta(report, t0, success=False)
+        log(f"!! 本轮有档导出失败：按 exit 5 记账（其它档已正常提交/推送）：{report['failed_profiles']}")
+        append_run(report, t0, 5)
+        return 5
     write_meta(report, t0)
     # 一轮成功就要把「shrink guard 静默标记」清掉：那个标记的静默期是 24 小时，
     # 而只有 hb-autosync 在它自己跑成功时才清 —— 手动轮修好了也不会清，
@@ -1774,12 +1787,8 @@ def main() -> int:
     _clear_guard_marker()
     log(f"sync 完成：{report['duration_seconds']}s 总量 {total/1048576:.1f}MB "
         f"committed={report.get('committed')} pushed={report.get('pushed')}")
-    code = 5 if report.get("failed_profiles") else 0
-    if code:
-        report["aborted"] = "profile_export_failed: " + ",".join(report["failed_profiles"])
-        log("!! 本轮有档导出失败：按 exit 5 记账（其它档已正常提交/推送）")
-    append_run(report, t0, code)
-    return code
+    append_run(report, t0, 0)
+    return 0
 
 
 RUNS_LOG = HERMES_HOME / "state" / "hb-sync-runs.jsonl"
@@ -1840,8 +1849,13 @@ def _record_health(exit_code: int, line: dict) -> None:
         pass
 
 
-def append_run(report: dict, t0: float, exit_code: int) -> None:
-    """每轮一行结构化记录（runs.jsonl）——验收/排障的唯一客观证据。"""
+def append_run(report: dict, t0: float, exit_code: int, count_health: bool = True) -> None:
+    """每轮一行结构化记录（runs.jsonl）——验收/排障的唯一客观证据。
+
+    count_health=False：只记行、**不进健康账本**。给 `--collect-only` 这类旁路轮用——
+    它跑的是临时镜像/不导出会话，却因为 exit 0 把 `consecutive_failures` 清零、
+    删掉 needs-attention 标记，等于用一次假成功掩盖真故障（2026-11-01 实测）。
+    """
     try:
         RUNS_LOG.parent.mkdir(parents=True, exist_ok=True)
         exports = report.get("exports", {}) or {}
@@ -1863,7 +1877,8 @@ def append_run(report: dict, t0: float, exit_code: int) -> None:
             "git_error": (report.get("git_error") or "")[:200],
             "via": ("bulk" if any(e.get("via") == "bulk" for e in exports.values()) else "cli"),
         }
-        _record_health(exit_code, line)
+        if count_health:
+            _record_health(exit_code, line)
         with open(RUNS_LOG, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(line, ensure_ascii=False) + "\n")
     except Exception as e:

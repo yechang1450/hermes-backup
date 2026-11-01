@@ -101,7 +101,7 @@ if [ -n "$DIRT" ]; then
       echo "!! 收口提交失败（可能无改动），继续"
     fi
     for i in 1 2 3; do
-      git -C "$MIRROR" push -q origin main && { echo "   已推送收口提交"; break; }
+      git -C "$MIRROR" push -q origin master && { echo "   已推送收口提交"; break; }
       echo "   推送失败（第 $i 次），5s 后重试"; sleep 5
     done
   fi
@@ -132,7 +132,7 @@ if [ $DRY = 1 ]; then
   echo "  1) git gc"
   echo "  2) 分批造提交（seed_generation.sh；每批 ≤ ${BATCH_MB}MB，dry-run 不生成）"
   echo "  3) gh repo create $OWNER/$TO --private（不存在时）"
-  echo "  4) 分批判 push → $TO:main（每批一推，避开单次 2GB 上限）"
+  echo "  4) 分批判 push → $TO:master（每批一推，避开单次 2GB 上限）"
   echo "  5) 浅克隆抽查（文件数 / 会话可解析）"
   echo "  6) 切换：branch refs/$FROM-archive（--keep-mirror-branch 可跳过）/ update main / origin=$TO / push / 写 local.json 的 repo"
   echo "  7) $([ $SKIP_ARCHIVE = 1 ] && echo '跳过归档' || echo "gh api -X PATCH repos/$OWNER/$FROM -f archived=true")"
@@ -182,12 +182,12 @@ echo "[6] 切换镜像到新代"
 if [ "$KEEP_MIRROR" = 1 ]; then
   echo "  跳过本地 $FROM-archive 分支（--keep-mirror-branch）"
 else
-  git -C "$MIRROR" branch -f "$FROM-archive" main
+  git -C "$MIRROR" branch -f "$FROM-archive" master
 fi
 git -C "$MIRROR" update-ref refs/heads/master "$C"
 git -C "$MIRROR" remote set-url origin "$URL"
 echo "  origin -> $URL"
-git -C "$MIRROR" push -q -u origin main && echo "  ✓ 切换后推送正常"
+git -C "$MIRROR" push -q -u origin master && echo "  ✓ 切换后推送正常"
 python - "$HERE/../local.json" "$TO" <<'PY'
 import json, sys
 from pathlib import Path

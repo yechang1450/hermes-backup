@@ -24,7 +24,7 @@ git clone https://github.com/yechang1450/hermes-backup.git "%LOCALAPPDATA%\herme
 方式二（Hermes 官方命令直装；会自动带上脚本与模板，网络不稳时重试）：
 
 ```
-hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-backup/main/SKILL.md
+hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-backup/master/SKILL.md
 ```
 
 ## 快速开始（源机）

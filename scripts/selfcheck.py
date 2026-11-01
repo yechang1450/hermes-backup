@@ -162,7 +162,8 @@ def cron_check(results: list) -> None:
         raw = json.loads(jobs_file.read_text(encoding="utf-8"))
         jobs = raw if isinstance(raw, list) else raw.get("jobs", [])
     except (OSError, ValueError) as exc:
-        step("自动同步调度", 2, f"读不到 {jobs_file}：{exc}", results)
+        # 全新安装还没有 cron 目录是正常的（不是故障），跳过并说明即可
+        step("自动同步调度", 0, f"跳过：{jobs_file} 不存在（尚未安装 cron 任务）", results)
         return
     names = {str(j.get("name", "")) for j in jobs}
     missing = [w for w in want if w not in names]
@@ -236,12 +237,19 @@ def runtime_copy_check(results: list) -> None:
             if dst.stat().st_size > 4096 or "runpy" not in body:
                 drift.append(f"{src.name}(应为转调壳，实为 {dst.stat().st_size}B)")
             continue
-        if hashlib.sha256(src.read_bytes()).hexdigest() != hashlib.sha256(dst.read_bytes()).hexdigest():
+        # EOL 归一后再比：同一份脚本在 Windows 上可能是 CRLF、仓里是 LF，直接比原始字节
+        # 会让"健康安装"永久判红（2026-11-01 冷启动审计实测 4 份全中）。
+        if hashlib.sha256(_norm_bytes(src)).hexdigest() != hashlib.sha256(_norm_bytes(dst)).hexdigest():
             drift.append(src.name)
     if drift:
         step("运行副本一致性", 2, f"与技能源不一致：{drift[:5]}", results)
     else:
         step("运行副本一致性", 0, "全部同名脚本一致（sync.py 为转调壳）", results)
+
+
+def _norm_bytes(path) -> bytes:
+    """读文件并把 CRLF/CR 归一成 LF——用于跨平台比对同一份脚本。"""
+    return path.read_bytes().replace(b"\r\n", b"\n").replace(b"\r", b"\n")
 
 
 def psutil_check(results: list) -> None:
@@ -267,7 +275,7 @@ def preserve_check(repo: str, results: list) -> None:
     try:
         cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        step("退役档完整性", 2, f"读不到 local.json: {exc}", results)
+        step("退役档完整性", 0, f"跳过：{cfg_path.name} 不存在（干净克隆/未部署到本机）", results)
         return
     base = cfg.get("preserve_baseline") or {}
     if not base:

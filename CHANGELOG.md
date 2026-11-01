@@ -1,3 +1,25 @@
+## 1.1.9 — 2026-11-01 · 三路审计（文档/运行时/AMD 适配）后的整批修复
+
+审计共 41 条（高 4 / 中 12 / 低 25），本次修掉其中**可动代码与文档的全部**：
+
+- **退出码分离**：批量删除闸原来复用 `exit 6` ⇒ `hb-autosync`/`hb-sentinel` 把它当 shrink guard，
+  写 24 小时静默标记、健康账本还不记失败。现在 `exit 7`，按**失败**记账并单列提示；`test-hb-health.py` 加用例。
+- **内存闸可观测 + fail-closed**：记 `mem_avail_gb`/`mem_total_gb`；下限改 `max(3GB, 总内存×6%)`；
+  `psutil` 缺失不再静默放行（`avail_gb=999`），改为退逐档 CLI 并标 `memory_gate_unavailable`。
+- **超时按本机重算**：包装器 `SYNC_TIMEOUT` 5400→**1800s**（本机实测单轮 88–459s，留 4× 余量；
+  且低于 cron 脚本超时 3600s，包装器能先收尾）；`LOCK_STALE_SECONDS` 3h→**1h**。
+- **`local.json` 的 `mode` 终于生效**：`local-only`（默认，不推）/ `push`（默认推，`--no-push` 可关）——
+  此前这个键没人读，改了等于没改。
+- **文档对齐纯本机**：README 八处（同步=commit 不 push、gh 仅 `--push` 需要、恢复源是本机镜像、安全口径）；
+  SKILL 九处（`gh` 仅 `--push` 适用、退出码补 3/7、`--allow-shrink` 同时放行批量删除闸、
+  自检项清单、`HEAD == origin/main` 改成「HEAD 即上一轮提交」、自检与全量审计不再要求 `ls-remote`）。
+- **自检新增两项**：**运行副本一致性**（`HERMES_HOME/scripts` 与技能源逐个 sha256；`sync.py` 必须是 <4KB 的
+  runpy 壳）、**psutil 可用性**；`自动同步调度` 增强为「在册 + 启用 + 无 guard/attention 标记 + 哨兵 15 分钟内跳过」。
+- **实测抓到并修好**：`restore_sessions.py` / `run_in_runtime.py` / `session_layout.py` 三份运行副本已陈旧，
+  已与技能源同步；13 个本项目的 `.bak-*` 移出 `HERMES_HOME/scripts` 与技能目录（存 `temp/ops/bak-cleanup-20261101`）。
+- **新增「本机部署三条现实约束」**（SKILL 正文）：浅克隆（30 轮，更早历史本机取不回）、单盘单副本、
+  UMA 内存挤压导致的 `low_memory` 跳轮——三条都是部署事实，不是代码缺陷。
+
 ## 1.1.8 — 2026-10-31 · 自检新增「自动同步调度」
 
 - 一天里踩了两次「脚本都在、就是没在同步」而**没有任何检查报出来**：换机后 `cron/jobs.json` 是空的；

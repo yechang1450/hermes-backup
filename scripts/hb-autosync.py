@@ -19,9 +19,11 @@ LOCALAPPDATA = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" /
 HOME = Path(os.environ.get("HERMES_HOME") or (LOCALAPPDATA / "hermes"))
 SYNC_SCRIPT = HOME / "skills" / "hermes-backup" / "scripts" / "sync.py"
 MIN_SYNC_GAP = 20 * 60
-SYNC_TIMEOUT = 5400   # 外层兜底：collect+export+commit 最坏 ~1900s，推送预算 1500s
+SYNC_TIMEOUT = 1800   # 2026-11-01：本机实测单轮 88–459s，5400s 会让真卡死白占 1.5h；
+                      # 仍留 4× 余量（含一次大重排）。cron 侧脚本超时 3600s > 本值，包装器能先收尾。
 CHILD_LOG = HOME / "state" / "hb-sync-child.log"
 GUARD_EXIT = 6               # sync.py 的 shrink guard：活库比备份少太多 ⇒ 拒绝同步（新机/未恢复）
+MASS_DELETE_EXIT = 7         # sync.py 的批量删除闸：按失败处理（不是 guard，不许静默）
 GUARD_MARKER = HOME / "state" / "hb-sync-guard-blocked.json"
 GUARD_QUIET_S = 24 * 3600    # 拦下后静默一天（配置问题，重试无意义）
 
@@ -232,6 +234,12 @@ def main() -> int:
     if rc == 0 and ("sync 完成" in tail or "已有另一轮同步" in tail):
         clear_guard_marker()
         return 0
+    if rc == MASS_DELETE_EXIT:
+        bump_unfinished(started, "mass_delete_guard")
+        print("[hb-autosync] 批量删除闸拦下本轮（拟删 >30% 已跟踪文件）：已按失败记账，"
+              "请检查镜像是否被误清；确认要覆盖时手工 sync.py --allow-shrink。\n%s" % tail[-600:],
+              flush=True)
+        return 1
     if rc == GUARD_EXIT:
         why = next((ln.strip() for ln in reversed(tail.splitlines())
                     if "活库" in ln or "shrink guard" in ln), "")

@@ -1,7 +1,7 @@
 ---
 name: hermes-backup
 description: Local git-mirror backup/restore of Hermes state (no cloud).
-version: 1.1.8
+version: 1.1.9
 author: yechang1450, Hermes Agent
 license: UNLICENSED
 platforms: [windows]
@@ -40,6 +40,8 @@ metadata:
 ## When to Use
 
 - 用户说「备份一下 / 同步一下 / 推到 GitHub / 把 Hermes 存一下」→ 执行 **流程 A（日常同步）**
+  （当前 `local.json` 的 `mode=local-only`：**默认只提交到本机镜像，不联网**；用户要推 GitHub 时必须显式 `--push`，
+  否则本轮只落本地，事后才发现没推）
 - 用户在新机或重装后说「恢复我的 Hermes 备份 / 从 GitHub 恢复之前的状态」→ 严格执行 **流程 B（新机恢复，见 templates/RESTORE.md）**
 - Don't use for：非 Hermes 数据；公开仓库（**本仓必须永远保持私有**，内含凭据与私人对话）。
 
@@ -47,7 +49,8 @@ metadata:
 
 - 本机一块可写的盘（镜像仓默认 `~/hermes-backup`）。首次使用：`python <SKILL>/scripts/sync.py --owner <你的GitHub用户名> --create-remote`（自动建私有仓、配 remote；已有仓直接识别）。owner/remote 也会从镜像仓 git remote 或 `gh` 登录名自动解析。
 - 本机 Hermes 安装完整：`HERMES_HOME`（默认 `%LOCALAPPDATA%\hermes`）内有 `hermes-agent/` 源码与 `bin/`、`tools/python-*/`。
-- 恢复端只需要：git ＋ 能读私有仓的凭据（PAT 或 SSH）。**恢复全程不依赖 `gh`**：`restore_files.py` /
+- 恢复端只需要：**本机镜像目录**（`~/hermes-backup`）＋ 一个 git。纯本机模式下**不需要任何 GitHub 凭据**；
+  只有把镜像搬到另一台机器时才需要凭据。**恢复全程不依赖 `gh`**：`restore_files.py` /
   `restore_sessions.py` / `apply_routing.py` 里 `gh` 出现 0 次——别把「本机没装 gh」当成恢复的前置阻塞项。
 - **`gh` 只在日常同步（`sync.py`）里必需**：解析属主、私有性检查（fail-closed，没有 gh 或查询失败
   ⇒ **拒绝推送**）、`--create-remote` 建仓、`gh repo edit --visibility` 改可见性。确需在无法验证的环境里推，
@@ -63,7 +66,7 @@ metadata:
 | 文件层恢复 | `python <REPO>/tools/restore_files.py --repo <REPO> --home <HERMES_HOME>` |
 | 会话层恢复 | `python <REPO>/tools/run_in_runtime.py <REPO>/tools/restore_sessions.py --all`（加 `--fast-import`，大型历史实测 2–4 倍速，见 references/session-storage.md） |
 | 拼包（给桌面端导入用） | `python <REPO>/tools/concat_sessions.py main` |
-| 全量自检（一条命令） | `python <SKILL>/scripts/selfcheck.py --repo <REPO>`（默认：编译＋全部 `test-*.py` 回归＋文档引用＋公开面卫生；加 `--repo` 再多跑分片体检，加 `--audit` 再跑会话层覆盖率审计。**项数以它自己打印的合计为准**） |
+| 全量自检（一条命令） | `python <SKILL>/scripts/selfcheck.py --repo <REPO>`（默认：编译＋全部 `test-*.py`＋文档引用＋公开面卫生＋**自动同步调度**；加 `--repo` 再加**退役档完整性**与分片体检，加 `--audit` 再跑会话层覆盖率审计。**项数以它自己打印的合计为准**） |
 | 覆盖率审计（镜像 vs 活库） | `python <SKILL>/scripts/audit-coverage.py --repo <REPO> --home <HERMES_HOME> --profile main`（PASS 打印 `AUDIT-PASS`，硬伤退出码 1；加 `--with-files` 连文件层一起审） |
 | 数据仓换代（体积到阈值） | `bash <SKILL>/scripts/rotate-generation.sh --from <旧代> --to <新代> --dry-run` 先看计划，再去掉 `--dry-run` 真跑（见 references/generations.md） |
 | 路由回写（微信/QQ 续接） | `python <REPO>/tools/apply_routing.py` |
@@ -144,7 +147,7 @@ metadata:
 - `scripts/test-zero-session.py` — 零产出保护回归（5 项：0 会话 + 有历史 ⇒ 判失败并保留旧文件 / 空档不误判 / 有产出不干预 / prune 后旧文件仍在）
 - `scripts/test-prune-protect.py` — 覆盖三类收敛保护：整档删除授权、`snapshot_sqlite` 回退不得递归、**`prune_unvisited(keep_paths=)` 的保留子树**、**`collect_profiles` 活库零档时整层不清**（项数以它自己打印的合计为准）
 - `scripts/test-kanban-snapshot.py` — SQLite 在线快照回归（3 项：WAL 下快照可正常打开 / 表结构与行数一致 / 普通拷贝的反例）
-- `scripts/test-kanban-scope.py` — kanban 采集范围回归（5 项：只备 boards 板库 / 不备工作区 db / 顶层 kanban.db / 走快照 API / **prune 之后板库仍在**）
+- `scripts/test-kanban-scope.py` — kanban 采集范围回归（只备 boards 板库 / 不备工作区 db / 顶层 kanban.db / **prune 之后板库仍在**；走快照 API 由 `test-kanban-snapshot.py` 覆盖。**项数以末行合计为准，别写死**）
 - `scripts/check-paths.py` — 恢复后扫「旧机器绝对路径」残留（默认只报告，`--fix` 才改写、先落 `.bak-paths-<时间>`；只动白名单文本件，不碰 `.db`/日志/会话）
 - `scripts/start-finish-restore.ps1` — 桌面端收尾器的壳（内联拼 `Invoke-CimMethod` 经 bash→pwsh 三层转义必 ParserError，故用壳；0=已拉起 / 2=找不到收尾器）
 - `scripts/test-commit-guards.py` — 提交期两道闸的回归（批量删除闸 4 项＋整档删除授权 3 项；用假 git，不碰真仓）
@@ -165,6 +168,19 @@ metadata:
 - `references/audit-playbook.md` — **自查手册**：四路审计（文档↔代码漂移 / 全新克隆下逐个脚本可跑性 / 代码级静默失败审查 / 公开面卫生）+ 误报判读与收尾
 - `references/host-migration.md` — **主机换盘/换目录后的六路审计**（数据完整性 / 引用完整性 / 跨盘残留 / 运行配置 / 旧副本停写 / 恢复演练）＋轻探针命令＋「哪些差异是正常淘汰」判读表
 - `references/selective-restore.md` — **选择性恢复配方**（先 clone → 盘点出真数 → 给可选菜单 → 配置文件逐键合并 → 执行顺序与回滚）；同一台机器重装后的恢复走这条，不要整机覆盖。**§8＝只挑一批会话恢复**（按标题前缀/归档位/子代理闭包挑，先验源覆盖度，连 composer-images 一起搬，比 session_key 与配对 id 再承诺续写）；**§8.5 起＝就地合并（ATTACH 源库 → 向活库 INSERT），不换 state.db**——换库要停全部持库者，而执行者自己就在其中
+
+## 本机部署的三条现实约束（2026-11-01 实测，改判据前先读）
+
+1. **镜像是浅克隆**：`.git/shallow` 指向某一轮的提交，`git rev-list --count HEAD` 只有 30 轮左右，
+   更早的快照**本机取不回**（`git show` 只能回到浅点之后）。判「能不能取回某天状态」看两条：
+   `git rev-parse --is-shallow-repository` 与 `git rev-list --count HEAD`。要长期留存历史，
+   定期把整仓打成 bundle 放到**另一块物理盘**：`git -C ~/hermes-backup bundle create <外盘>/hb-<日期>.bundle --all`。
+2. **单盘单副本**：纯本机模式下镜像与活库在同一块盘（`C:`），同盘＝同一故障域；磁盘坏了源和备份一起没。
+   这不是代码问题，是部署问题——要么外接一块盘做 bundle，要么接受「只防误删、不防盘损」。
+3. **统一内存机器（AMD APU）的内存挤压**：核显与系统共享内存，桌面合成器（dwm）在 UMA 下会短暂吃掉几十 GB，
+   可用内存可能瞬间见底。这时 `sync.py` 的内存闸会让本轮 **exit 2（aborted=low_memory）**，
+   账本里记 `mem_avail_gb`/`mem_total_gb`；**这不是故障**，等内存回落下一轮自然恢复。
+   判据：`hb-sync-runs.jsonl` 该行 `aborted` 含 `low_memory` 且 `mem_avail_gb` 很低。
 
 ## 流程 A：日常同步（源机）
 
@@ -189,10 +205,11 @@ metadata:
 | 检查 | 判据命令 | 不满足时的表现 |
 |---|---|---|
 | `profiles/` 目录存在 | `ls "$HERMES_HOME/profiles"` | `FileNotFoundError …\hermes\profiles` → 整轮 `exit 2`。只有 default 一档的新机必现（备份里没有这个空目录），`mkdir -p` 即可 |
-| `gh` 可执行 | `gh auth status` | 私有性无法验证 → 拒绝推送 → `exit 4`。`sync.py` 的 `_gh_exe()` **先看 PATH、再查官方安装位置**（`%ProgramFiles%\GitHub CLI\gh.exe` 等）——从备份恢复只拷了 exe、没走安装器时 PATH 是空的，这一步兜住；两处都找不到才判「gh 不可用」 |
+| `gh` 可执行（**仅 `--push` 轮适用**） | `gh auth status` | 私有性无法验证 → 拒绝推送 → `exit 4`。纯本机轮不解析远端、不调 gh，这一项不适用。`sync.py` 的 `_gh_exe()` **先看 PATH、再查官方安装位置**（`%ProgramFiles%\GitHub CLI\gh.exe` 等）——从备份恢复只拷了 exe、没走安装器时 PATH 是空的，这一步兜住；两处都找不到才判「gh 不可用」 |
 | shrink guard 是否该放行 | 活库会话数 vs `sessions/*/` 文件数 | 活库 < 备份 50% → `exit 6`，镜像零改动 |
 
-退出码对照：`2` 导出/采集失败 · `4` 私有性无法验证拒推 · `5` 零产出（该档保留旧文件）· `6` shrink guard 主动拒绝。
+退出码对照：`2` 导出/采集失败（含 `low_memory` 跳轮）· `3` git 环节失败 · `4` 私有性无法验证拒推（仅 `--push`）·
+`5` 零产出（该档保留旧文件）· `6` shrink guard 主动拒绝 · **`7` 批量删除闸**（拟删 >30% 已跟踪文件，按**失败**记账、不写静默标记）。
 
 **新机恢复后第一次同步前，再做一次「会话 ID 对账」——只看条数会漏。** `restore_sessions` 的 `imported/skipped` 只统计这一轮处理过的会话，不等于镜像里的全部 ID 都进了活库；实测出现过镜像 `sessions/main` 有 2,247 个 ID、活库只有 2,205 个，随后一轮同步把镜像工作树里缺的 43 个会话文件 prune 掉。开跑前必须：①`git -C <镜像> ls-tree -r --name-only <commit> sessions/<档>` 取镜像 ID，`state.db` 取 `select id from sessions`，**差集必须为 0**；②差集非空时按 `git show <commit>:<路径>` 把缺的 `.jsonl` 与 `.part-*` 分片提取到一个目录，作为 `restore_sessions.py --source` 再导入，**不要先同步**；③`shrink_guard` 只拦「活库 < 备份 50%」，1–2% 的缺口它能放行，所以恢复完成前把两个自动同步 cron 保持 paused，补完再恢复。
 
@@ -205,7 +222,8 @@ metadata:
 
 **`local.json` 里的 mirror/repo 不能直接信**：它可能是上一次没做完的换代留下的（镜像指向一个根本不是 git 仓的目录、仓名在远端不存在）。判据三条：该目录存在且 `git -C <mirror> rev-parse` 成功、`git remote -v` 有 origin、`gh repo view <owner>/<repo>` 能查到。三条有任一不成立，就以**现存的真仓**为准改回 `local.json`，别顺着它去 `--create-remote` 新建一个空仓。
 
-**`--allow-shrink` 之前先证可回滚**：`git ls-tree -r HEAD --name-only sessions/<档> | wc -l` 数出该档在 HEAD 里的文件数，并确认 `HEAD == origin/main`。prune 只动工作树，历史仍可 `git show <sha>:sessions/<档>/<sid>.jsonl` 单条取回——这是「用本机现状覆盖镜像」可接受的前提，也是给用户解释「删了什么、怎么找回」的依据。
+**`--allow-shrink` 之前先证可回滚**：`git ls-tree -r HEAD --name-only sessions/<档> | wc -l` 数出该档在 HEAD 里的文件数，并确认 `HEAD` 就是上一轮提交（纯本机模式没有 origin，别去找 `origin/main`）；建议先打一个可回取分支
+`git branch -f pre-<机器>-takeover HEAD`。prune 只动工作树，历史仍可 `git show <sha>:sessions/<档>/<sid>.jsonl` 单条取回——这是「用本机现状覆盖镜像」可接受的前提，也是给用户解释「删了什么、怎么找回」的依据。
 
 **发现工作树已经被误 prune（还没提交）时，整体回滚只要一条命令**：`git -C <镜像> checkout -- .` —— 已跟踪文件全部还原（实测 1.5 万个文件 4 秒，`D` 9839→0、`M` 168→0），**未跟踪的新文件原样保留**，而那正是本轮刚导出的增量。判据：`git status --porcelain` 的分组从 `D/M/??` 变成只剩 `??`。**别用 `git reset --hard`**（连未跟踪增量一起丢）、也别 `git clean`。回滚后先 `find <层> -type f | wc -l` 复核对得上 HEAD，再决定要不要重跑。这条路径救过一次 8,284 个 profile 文件的清空——prune 在采集阶段就跑完了，而提交在它之后，**中间这段窗口是可逆的**。
 
@@ -332,6 +350,8 @@ metadata:
   可逆处置＝把归档行迁到独立归档会话（`scripts/split-archive-session.py`）——**只降体量，不等于 UI 修好**：
   拆完要看 `logs/desktop.log` 里有没有 `offset>0` 的 `/messages` 请求才算翻页真的发生，实测拆完重启后用户仍报原样。同上 §7.4。
 - **批量导出缺 `export_all_profiles.py` 会静默变慢 3–5 倍**；`HERMES_HOME/scripts/sync.py` 若存在只能是**转调壳**，不能是副本。
+- **镜像里出现 gitlink（`mode 160000`）＝那个目录只备了一个指针，没备文件。** 被备份的目录自身若是 git 仓（技能目录就是），整目录拷进镜像时 git 会把它记成子模块指针；换机恢复时该路径是**空的**，等于没备份，而 `git status` 只显示一行 ` M`，看不出问题。`copy_tree` 一律跳过嵌套 `.git`；体检：`git -C <镜像> ls-files -s | awk '$1=="160000"'` 必须为空，非空就 `git rm --cached <路径>` 后按文件重新入库。
+- **`cron` 的 `completed` 只证明包装器退出 0，不证明它做了活。** 新鲜度闸（距上次成功 <20 分钟）与 shrink-guard 静默标记都会让它**静默 return 0、零输出**——cron 表里一切正常，而备份已经几小时没动。判「同步真的在跑」只认 `state/hb-sync-runs.jsonl` 出现新行 + 镜像 HEAD 前进；并且**任何一轮成功都要清掉 `state/hb-sync-guard-blocked.json`**，否则手动修好了也会被 24 小时静默期压住。
 - **哨兵看锁的活性**（读 pid），死锁不该永久挡住补跑；`overdue` 另有 `overdue-no-state` 覆盖「从未成功过」。
 - **判容量看 `gh api … --jq .size`**，`churn-report.py` 量的是「新增 blob 字节」，不是仓体积增长。
 - **换代**：判据是「常规轮 push >10 分钟 / 克隆 >15 分钟 / `.size` >8GB / 历史占比 >20%」，**不是「体积到 12GB」**；孤儿快照**分批推送**（单次 push 上限 2GB）、旧仓 `archived=true`。换算不了：`.size` ≈ 树（历史只多 1.6%），换代不会重置树的增长。
@@ -350,7 +370,8 @@ metadata:
 2. 网关：`gateway_state.json` 的 mtime 新鲜度 + `pid` + `platforms.*.state`（`weixin`/`qqbot` 应为 connected）+ 进程表里有且只有一个 `hermes_cli.main gatew*`。**`gateway_state.json` 只在 default home 一份**（多档共用一个 multiplexer）。
 3. **`ESTOP` 文件在不在**（`%LOCALAPPDATA%/hermes/ESTOP`）：`hermes pause` 跨重启保留，会让 cron 静默停摆而网关看起来一切正常；在就 `hermes resume`。
 4. cron 是否还在跳：读 `cron/executions.db` 最近几行（哨兵应每 2–3 分钟一条 `completed`），不要只信 `cron list` 的 Last Run。
-5. 同步线：锁文件在不在 + `state/hb-sync-runs.jsonl` 最后一行 + `git ls-remote` 与本地 HEAD；健康文件 `consecutive_failures`。**更新后跑满一整天再判断稳定性**——更新期间那几轮会因资源争用变慢（实测 export 1181s / git 1367s），不是机制坏了。
+5. 同步线：锁文件在不在 + `state/hb-sync-runs.jsonl` 最后一行（`committed` 为 true 即算跑过；纯本机模式 `pushed` 是 null）
+   + 镜像 HEAD 是否前进；健康文件 `consecutive_failures`。只有 `--push` 轮才核 `git ls-remote`。**更新后跑满一整天再判断稳定性**——更新期间那几轮会因资源争用变慢（实测 export 1181s / git 1367s），不是机制坏了。
 6. 环境漂移：`hermes update` 会换 tools python（实测 3.14.7→3.14.9）并换出旧包——`python -c "import psutil"` 之类可选依赖要复验；`HERMES_HOME/scripts/` 里的运行副本与技能副本用 sha256 比对（更新不应覆盖，但要证）。**同时复核网关启动器**（`gateway-service/Hermes_Gateway.vbs`/`.cmd`）：它们内嵌安装时的解释器绝对路径，换 python 后路径失效 → 计划任务照报 `Last Result 0` 但网关根本没起来（`hermes gateway status` 报 `No gateway process detected`）；修法是 `hermes gateway install --start-on-login --no-start-now` 重生成启动器再 `schtasks /Run`，详见 `windows-autostart-ops`。
 7. 配置仍在：`hermes config get sessions.max_export_messages` 应为 `0`（否则巨会话导出会整包失败且 rc=0 无产物）。**新机从备份恢复后这个键常回默认 `20000`**——不是「更新弄丢了」，而是恢复只覆盖被备份过的键；见到 `SessionExportTooLargeError … more than 20,000 exportable messages` 就是它。
 8. **恢复链路复验（最要紧）**：跑 `references/restore-drill.md` 的「低成本冒烟」两例（小档整档 + 一个巨会话），确认官方导入 API / schema 变动没有破坏恢复。
@@ -397,7 +418,7 @@ metadata:
 - **每轮结构化记录**：`$HERMES_HOME/state/hb-sync-runs.jsonl` 一行一轮（时长／分段耗时 collect·export·git／退出码／committed·pushed／字节数）——追轮次历史、算成功率与分段成本先读它；连续失败计数在 `state/hb-sync-health.json`，≥3 轮失败写 `state/hb-sync-needs-attention` 标记（不推送、不打扰，成功一轮自动清）。
 - 恢复后：置顶对话在；微信/QQ 发消息能续接旧线程；群聊记录在；各档 `hermes -p <档> sessions stats` 数量与备份一致；主档出词正常（provider 可用）。
 - 全量验收入口：`templates/RESTORE.md` 第 6 节清单。
-- **全量审计（大改后或定期）**：四路核对（维护笔记③）＋版本字符串全扫（如 `grep -rn '0\.3\.' <技能目录>`，捕捉状态行/示例漂移）＋点火一轮真同步核 `git ls-remote` 前进；线上设置与隐私面 → `github-security-audit` 技能。四路自查的完整清单（含每条的 grep 与判据）→ `references/audit-playbook.md`。
+- **全量审计（大改后或定期）**：四路核对（维护笔记③）＋版本字符串全扫（如 `grep -rn '0\.3\.' <技能目录>`，捕捉状态行/示例漂移）＋点火一轮真同步核**镜像 HEAD 前进**（纯本机模式不看 `ls-remote`）；线上设置与隐私面 → `github-security-audit` 技能。四路自查的完整清单（含每条的 grep 与判据）→ `references/audit-playbook.md`。
 - **完整性＝两条腿，缺一条都不算数**：①**演练**（镜像 → 沙箱，证明"能恢复"）②**覆盖率审计**（活库 → 镜像，证明"备的是全部"）。审计默认只审会话层；**要连文件层（`--with-files`）一起跑**才算覆盖配置/记忆/技能/平台数据那一半。判据一句话：缺会话／镜像条数超前／会话文件解析失败＝**硬伤**（退出码 1）；**多会话＝警告**（0.4.48 起）、**落后＝正常增量**、孤立消息组＝活库自身残留，均不计硬伤。
 - **审计的两类"非硬伤"要会读，别急着当漏备**：①**文件层轮内新建豁免**（0.4.13）——白名单目录/文件在镜像缺失，但源内容 mtime 晚于本轮 `started_at` 时，判「轮内新建、下一轮会采」，输出在 `· 轮内新建…` 一行、不计硬伤（实案：`desktop/interrupted_turns.json` 由桌面端在轮后写入，被误判为漏备）；②**镜像独有会话**（审计报「多会话」）——通常是活库被外部事件换过（state.db 回滚/还原、手工清理），不是漏备也不是采集错：下一轮会从最新树 prune，**git 历史仍保留**；要留档先另存文件（含分片），要导回用 `git show <sha>:sessions/main/<sid>.jsonl` 取出后走 `--source` 导入。看到「多会话」先问「活库最近是否被回滚过」，别从活库删东西。
 - **「镜像多会话」只警告，不判硬伤**（0.4.48）：子代理临时会话（`Subagent: …`）、人工删除、库回滚都会让镜像比活库多；

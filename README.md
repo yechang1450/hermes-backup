@@ -1,14 +1,17 @@
 # hermes-backup
 
 把整个 Hermes Agent 备份到**本机的 git 镜像仓**（默认 `~/hermes-backup`，纯线下、不联网）；重装/换机后，在新的 Hermes 里一句话恢复。
-Windows、**零必需第三方依赖**（Python 标准库 + PowerShell；`psutil` 属可选增强——装了才有更彻底的
-进程树回收/孤儿清理，没装则自动降级，同步本身照常跑）。
+Windows、**零必需第三方依赖**（Python 标准库 + PowerShell）。`psutil` 属**可选增强**：装了才有内存闸与
+更彻底的进程树回收；**没装时内存闸会自动降级为“逐档 CLI”并在账本里标注**（不再静默放行）。
+
+> 当前版本见 `CHANGELOG.md` 第一条（与 SKILL.md 的 `version:` 同步维护）。
 
 ## 它做什么
 
-- **同步**（源机）：一条命令把 配置/凭据/记忆/技能/会话历史/桌面数据（群聊、置顶、聊天附图）采集进镜像工作区 → commit → push。
+- **同步**（源机）：一条命令把 配置/凭据/记忆/技能/会话历史/桌面数据（群聊、置顶、聊天附图）采集进镜像工作区 → commit。
+  **默认只落本地、不联网**；要推远端必须显式加 `--push`（此时才需要 `gh` 与 GitHub 凭据）。
 - **恢复**（新机，本机镜像同理）：从镜像仓 clone → 文件层恢复 → 会话层恢复（走 Hermes 官方导入管线）→ 平台路由回写 → 桌面端收尾器 → 重启即回到重装前。
-- **私有保障**：推送前自动检查仓库可见性；非私有自动改回；改不回则拒绝推送。
+- **私有保障（仅 `--push` 时生效）**：推送前自动检查仓库可见性；非私有自动改回；改不回则拒绝推送。
 
 ## 安装
 
@@ -26,10 +29,10 @@ hermes skills install https://raw.githubusercontent.com/yechang1450/hermes-backu
 
 ## 快速开始（源机）
 
-1. 首次初始化（自动创建私有仓并首推）：
+1. 首次初始化（纯本机模式：指定镜像目录即可，**不需要 GitHub**）：
 
    ```
-   python %LOCALAPPDATA%\hermes\skills\hermes-backup\scripts\sync.py --owner <你的GitHub用户名> --create-remote
+   python %LOCALAPPDATA%\hermes\skills\hermes-backup\scripts\sync.py --mirror %USERPROFILE%\hermes-backup
    ```
 
 2. 日常同步：
@@ -55,22 +58,25 @@ python scripts/selfcheck.py --repo ~/hermes-backup --audit   # 追加会话层�
 
 把备份仓地址交给新机上的 Hermes Agent（或人）：
 
-> 从我的 GitHub 私有仓库 `<用户名>/hermes-backup` 克隆到 ~/hermes-backup，读 RESTORE.md 按步骤恢复。
+> 从**本机镜像** `~/hermes-backup`（纯本机模式，无需任何凭据）克隆/复制到目标位置，读 RESTORE.md 按步骤恢复。
+> 若镜像被搬到另一台机器（外置盘/局域网），把那个路径当备份仓地址即可。
 
 全程只有一步需要人工：中途完全退出一次桌面端（收尾器自动完成替换并重新拉起）。
 
 ## 前提
 
 - Windows 11 + Hermes Agent（常规安装布局：`%LOCALAPPDATA%\hermes\` 下有 `hermes-agent/`、`bin/`、`tools/python-*/`）。
-- Python 与 git 用 Hermes 自带的即可。**`gh`（GitHub CLI）实际必需**：建仓、解析属主与私有性检查都靠它；
-  没有 gh 时同步会**拒绝推送**（可用 `--allow-unverified-privacy` 显式放行，但私有性就得你自己保证）。
+- Python 与 git 用 Hermes 自带的即可。**`gh` 只在 `--push` 时需要**：建仓、解析属主与私有性检查靠它；
+  纯本机轮不解析远端、不调 gh。没有 gh 却要推时，同步会**拒绝推送**（可用 `--allow-unverified-privacy` 显式放行，
+  但私有性就得你自己保证）。
   `gh` 不必在 PATH 里 —— 脚本会先查 PATH、再查官方安装位置（`%ProgramFiles%\GitHub CLI\gh.exe` 等），
   从备份恢复只拷了 exe 的情形也能用。
 
 ## 安全
 
-- **备份仓必须永远保持私有**：内容含凭据与私人对话。
-- 技能本体不含任何密钥；全部操作在本机执行；唯一网络行为是推送到你自己的仓库。
+- **镜像里含凭据与私人对话**：纯本机模式下它是本机目录（`~/hermes-backup`，勿共享/勿上云盘同步）；
+  一旦 `--push` 到远端，**仓库必须永远保持私有**。
+- 技能本体不含任何密钥；默认全部操作在本机执行；唯一可能的网络行为是显式 `--push` 时推送到你自己的仓库。
 - 技能目录下的 `local.json` 是机器本地配置，不进入任何仓库。可选键 `preserve_sessions`：
   列出「本机已退役、但备份要原样留档」的 profile 档名（例如只恢复 default 档的新机上那批旧 bot 档）；
   列进去的档不计入 shrink guard 的分母、不参与整档删除判定、prune 时原样保留。**不要把 `main` 写进去。**

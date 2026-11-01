@@ -198,7 +198,7 @@ PART_MAX = 12 * 1024 * 1024             # 会话分片阈值（0.4.26 由 45MB �
                                         # 12MB 距 GitHub 单文件 100MB 硬限留 8 倍余量，仍远低于「建议 50MB」。
 
 LOCK_FILE = HERMES_HOME / "state" / "hermes-backup-sync.lock"
-LOCK_STALE_SECONDS = 3 * 3600           # 兜底：无法核实持有者时的陈旧锁窗口（正常由 pid 存活判定立即接管）
+LOCK_STALE_SECONDS = 1 * 3600   # 2026-11-01：本机实测单轮 88–459s，3h 会让真卡死堵住 3 小时           # 兜底：无法核实持有者时的陈旧锁窗口（正常由 pid 存活判定立即接管）
 
 EXCLUDE_PATTERNS = ("*.lock", "*.pid", "*-wal", "*-shm", "*~", "Thumbs.db", "desktop.ini", "*.pyc")
 # .git 必须排除：技能目录本身是 git 仓，整目录拷进镜像会让 git 把该路径记成
@@ -875,6 +875,8 @@ def prune_stale(sessions_root: Path, keep: dict[str, set[str]],
 # 「gh 不可用拒绝推送」挡住了它。备份一旦这样提交，HEAD 就只剩新机的几十个会话；
 # guard_zero_sessions 拦不住「数量少但非零」的情形，所以要在采集**之前**先拦。
 GUARD_EXIT = 6                  # shrink guard 拒绝的专用退出码（包装器/健康账本都认它）
+MASS_DELETE_EXIT = 7            # 批量删除闸（2026-11-01：原来复用 6，被包装器当成 shrink guard
+                                #   → 写 24h 静默标记、健康账本不记失败，真问题被藏起来）
 MASS_DELETE_MIN = 100           # 提交前「批量删除」闸：删除数至少这么多才判
 MASS_DELETE_RATIO = 0.30        # 且占已跟踪文件数的比例超过它 ⇒ 判误删
 
@@ -1032,13 +1034,28 @@ def export_sessions(report: dict, skip_exports: bool) -> None:
         #   <8GB 可用：退回逐档 CLI（一次只处理一个档，峰值更低、可被 900s 单独掐断）
         try:
             import psutil as _ps
-            avail_gb = _ps.virtual_memory().available / 1073741824
-        except Exception:
-            avail_gb = 999.0
-        if avail_gb < 3:
-            log(f"!! 可用内存仅 {avail_gb:.1f}GB：本轮跳过导出（exit 2），避免整机 OOM")
-            raise RuntimeError(f"low_memory（可用 {avail_gb:.1f}GB < 3GB）")
-        if avail_gb < 8:
+            vm = _ps.virtual_memory()
+            avail_gb = vm.available / 1073741824
+            total_gb = vm.total / 1073741824
+            # 相对下限：UMA 机器（核显共享内存）在大屏/合成器吃满时 available 会瞬间见底，
+            # 绝对阈值在 64GB 机上偏松、在小机上偏紧，取两者较大者。
+            floor_gb = max(3.0, total_gb * 0.06)
+        except Exception as e:  # noqa: BLE001
+            # psutil 缺失/损坏时**不许 fail-open**：那会让这道闸静默失效（2026-11-01 审计发现）。
+            bulk_ok = False
+            avail_gb = total_gb = -1.0
+            floor_gb = 8.0
+            log(f"!! 内存闸不可用（{type(e).__name__}: {e}）——本轮改走逐档 CLI（峰值更低），"
+                f"并在账本里标注 memory_gate_unavailable")
+            report["memory_gate_unavailable"] = True
+        report["mem_avail_gb"] = round(avail_gb, 1)
+        report["mem_total_gb"] = round(total_gb, 1)
+        if avail_gb >= 0 and avail_gb < floor_gb:
+            log(f"!! 可用内存仅 {avail_gb:.1f}GB（下限 {floor_gb:.1f}GB，总 {total_gb:.1f}GB）："
+                f"本轮跳过导出（exit 2），避免整机 OOM")
+            report["aborted"] = "low_memory"
+            raise RuntimeError(f"low_memory（可用 {avail_gb:.1f}GB < 下限 {floor_gb:.1f}GB）")
+        if avail_gb >= 0 and avail_gb < 8:
             bulk_ok = False
             log(f"!! 可用内存 {avail_gb:.1f}GB 偏低：跳过单进程批量导出，改走逐档 CLI（峰值更低）")
 
@@ -1595,8 +1612,13 @@ def main() -> int:
     ap.add_argument("--create-remote", action="store_true",
                     help="远端不存在时用 gh 创建私有仓")
     args = ap.parse_args()
-    # 纯本机模式：默认只 commit 到本地镜像仓，不联网、不推 GitHub。
-    args.no_push = not args.push
+    # 推送与否由 local.json 的 mode 决定默认值（2026-11-01：原来这个键没人读，改了没效果）：
+    #   mode="local-only"（默认）→ 不推；mode="push" → 默认推，可用 --no-push 关掉。
+    _mode = str(_skill_config().get("mode") or "local-only").strip().lower()
+    if _mode == "push":
+        args.no_push = bool(args.no_push) and not args.push
+    else:
+        args.no_push = not args.push
 
     if not acquire_lock():
         return 0
@@ -1727,8 +1749,8 @@ def main() -> int:
         git("checkout", "--", ".", check=False)
         report["aborted"] = "mass_delete_guard"
         write_meta(report, t0, success=False)
-        append_run(report, t0, GUARD_EXIT)
-        return GUARD_EXIT
+        append_run(report, t0, MASS_DELETE_EXIT)
+        return MASS_DELETE_EXIT
     except (RuntimeError, subprocess.TimeoutExpired) as e:
         log(f"!! git 环节失败：{e}")
         report["git_error"] = str(e)

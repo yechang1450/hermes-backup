@@ -16,6 +16,7 @@ import argparse
 import os
 import sqlite3
 from datetime import datetime
+import hashlib
 import json
 import re
 import subprocess
@@ -195,10 +196,63 @@ def cron_check(results: list) -> None:
                    - datetime.fromisoformat(sent[0])).total_seconds() / 60
     except Exception:
         age_min = 999
+    # ② 两任务必须 enabled（pause 掉也还在册，但不会跑）
+    disabled = [j.get("name") for j in jobs if j.get("name") in want and j.get("enabled") is False]
+    # ③ 状态标记：这两个存在就说明「上一轮被拦/连续失败」，绿灯会掩盖真问题
+    flags = [n for n in ("hb-sync-guard-blocked.json", "hb-sync-needs-attention")
+             if (home / "state" / n).exists()]
+    if disabled:
+        step("自动同步调度", 2, f"任务被停用：{disabled}（cron 里 active=false 不会跑）", results)
+        return
+    if flags:
+        step("自动同步调度", 2,
+             f"存在状态标记 {flags} —— 自动轮被拦或连续失败中（成功一轮会自动清除）", results)
+        return
     if age_min > 15:
         step("自动同步调度", 2, f"哨兵最近一次执行在 {age_min:.0f} 分钟前（>15）—— 调度可能已停", results)
     else:
-        step("自动同步调度", 0, f"两任务在册；哨兵 {age_min:.0f} 分钟前 {sent[1]}", results)
+        step("自动同步调度", 0, f"两任务在册且启用；哨兵 {age_min:.0f} 分钟前 {sent[1]}", results)
+
+
+def runtime_copy_check(results: list) -> None:
+    """`HERMES_HOME/scripts` 里的运行副本必须与技能源一致（sync.py 例外，它是转调壳）。
+
+    2026-11-01 审计发现：restore_sessions.py / run_in_runtime.py / session_layout.py 三份副本
+    比技能源旧，却没人管——cron 与人工都可能调到旧逻辑。
+    """
+    home = Path(os.environ.get("HERMES_HOME") or (Path.home() / "AppData" / "Local" / "hermes"))
+    rt = home / "scripts"
+    if not rt.is_dir():
+        step("运行副本一致性", 0, "HERMES_HOME/scripts 不存在（未安装自动同步，跳过）", results)
+        return
+    drift = []
+    for src in sorted(HERE.glob("*.py")):
+        dst = rt / src.name
+        if not dst.exists():
+            continue
+        if src.name == "sync.py":
+            # 必须是壳：小于 4KB 且含 runpy
+            body = dst.read_text(encoding="utf-8", errors="replace")
+            if dst.stat().st_size > 4096 or "runpy" not in body:
+                drift.append(f"{src.name}(应为转调壳，实为 {dst.stat().st_size}B)")
+            continue
+        if hashlib.sha256(src.read_bytes()).hexdigest() != hashlib.sha256(dst.read_bytes()).hexdigest():
+            drift.append(src.name)
+    if drift:
+        step("运行副本一致性", 2, f"与技能源不一致：{drift[:5]}", results)
+    else:
+        step("运行副本一致性", 0, "全部同名脚本一致（sync.py 为转调壳）", results)
+
+
+def psutil_check(results: list) -> None:
+    """psutil 不是标准库——缺了内存闸会自动降级，必须让人知道。"""
+    try:
+        import psutil as _ps
+        step("psutil 可用性", 0, f"{_ps.__version__}（内存闸/进程回收可用）", results)
+    except Exception as exc:  # noqa: BLE001
+        step("psutil 可用性", 0,
+             f"缺失（{type(exc).__name__}）——内存闸会降级为逐档 CLI，账本会标 memory_gate_unavailable",
+             results)
 
 
 def preserve_check(repo: str, results: list) -> None:
@@ -262,6 +316,8 @@ def main() -> int:
     doc_refs(results)
     privacy_check(results)
     cron_check(results)
+    runtime_copy_check(results)
+    psutil_check(results)
     if a.repo:
         if Path(a.repo).is_dir():
             preserve_check(a.repo, results)

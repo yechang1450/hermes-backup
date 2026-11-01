@@ -105,6 +105,17 @@ def main() -> int:
     h5 = json.loads(HEALTH.read_text(encoding="utf-8"))
     check("连续两次 exit 6 也不涨", h5.get("consecutive_failures") == 2, str(h5.get("consecutive_failures")))
 
+    print("== D. 批量删除闸（exit 7）**必须**算失败：计数 +1、写标记 ==")
+    h6 = {"consecutive_failures": 2, "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+          "last_exit_code": 0, "last_error": None}
+    HEALTH.write_text(json.dumps(h6), encoding="utf-8")
+    if MARKER.exists():
+        MARKER.unlink()
+    sync._record_health(7, {"start_ts": "z3", "end_ts": "2026-11-01T11:00:00", "duration_s": 1})
+    h7 = json.loads(HEALTH.read_text(encoding="utf-8"))
+    check("exit 7 计数 +1（->3）", h7.get("consecutive_failures") == 3, str(h7.get("consecutive_failures")))
+    check("exit 7 记下并写 needs-attention", h7.get("last_exit_code") == 7 and MARKER.exists())
+
     print()
     print("== 总判定：%s ==" % ("PASS" if ok_all else "FAIL"))
     return 0 if ok_all else 1

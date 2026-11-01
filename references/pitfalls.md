@@ -63,8 +63,11 @@
 - **自定义拷贝路径必须登记 `_COPIED`，否则会被 prune 当残留删掉**（0.4.30，2026-10-25 实案）：`copy_kanban_dbs` 直接调 `snapshot_sqlite()`（绕过了 `copy_file` 的登记），结果 `prune_unvisited` 把 11 个板库当"本轮未访问"全删了——镜像是空的、且没有任何报错。凡是不走 `copy_file()` 的写镜像路径，都必须 `_COPIED.add(str(目标路径))`。回归＝`test-kanban-scope.py` 的 S5（copy 后跑 prune，断言文件仍在）。
 
 - **镜像仓要关掉自动 repack**（0.4.37）：`git gc --auto` 会在同步轮内触发全量 repack，实测把一轮从 ~300s 拖到 **1,465s**
-  （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；需要时**手动** `git -C <镜像> gc --quiet`（判据：`git count-objects -v` 的 `count` > 20,000），
-  且只在没有同步轮在跑的时候做。**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
+  （git 阶段 1,090s）。镜像的 `.git/config` 已设 `gc.auto=0`；**实测关闭后 git 段 1,090s → 103s**（同机器、同一轮导出量）。
+  **但「关掉 gc.auto」不等于「不用 gc」，而且判据不能按对象个数**：`gc.auto=6700` 数的是**松散对象个数**，而这个仓每轮新增的是大文件
+  （实测一轮 2,545 个文件／300MB 松散，对象数远没到阈值体积已经上去了）。现在 `commit_and_push` 提交成功后读
+  `git count-objects -v` 的 `size:`（KB），**≥800MB 才 `git gc --quiet`**（失败只记日志、不影响本轮）；手工体检也用同一个数，
+  别看 `count`。真跑一次：1.93GiB + 406MB 松散 → **1.72GiB / 2 个包**。
 
 - **两份 sync.py 不要分叉**（0.4.55）：cron 的 `hb-sentinel.py` / `hb-autosync.py` 放在 `HERMES_HOME/scripts/`（cron 只能放这里），
   但它们**指向技能目录里的 `sync.py` 正本**。所以：
@@ -73,6 +76,8 @@
   · `HERMES_HOME/scripts/` 只需 `hb-sentinel.py` + `hb-autosync.py`；若那里也放了一份 `sync.py`，**它必须是转调壳**而不是副本
     （2026-10-26 实案：副本缺 helper，手动轮走慢路径而 cron 正常，很难发现）。
   · 自查：`python "$HERMES_HOME/scripts/sync.py" --help` 能出 usage；`ls "$HERMES_HOME/skills/hermes-backup/scripts/export_all_profiles.py"` 存在。
+
+- **备份目录里带 `.git` ⇒ 镜像只存了一个 gitlink（mode 160000），文件一个没备**（2026-10-31 实案）：技能目录自身是 git 仓，`copy_tree` 整目录拷进 `home-overlay/skills/<name>/` 后，git 把该路径记成**子模块指针**（指向技能仓的某个提交）。表面症状只有一行 ` M home-overlay/skills/<name>`，而换机恢复时那个目录**是空的**——备份声称包含了技能，实际什么都没备。修法：`EXCLUDE_DIRNAMES` 里加 `.git`，让拷贝跳过**任何嵌套 git 仓**；已踩过的镜像要 `git rm --cached <路径>` 去掉指针，再按文件重新入库（实测该路径从 1 个 gitlink 变为 51 个真文件）。体检命令：`git -C <镜像> ls-files -s | awk '$1=="160000"'` 必须为空；空目录不要用「文件数」判断，gitlink 在 `ls-files` 里只算一行。
 
 - **整档删除必须显式授权**（0.4.49，2026-10-26 代码审查发现）：`prune_stale` 原实现「keep 里没有的档就 rmtree」——
   某档导出失败/零产出时会把它**整档历史清掉**再 commit+push。现在签名是 `prune_stale(root, keep, allow_delete=…)`，
@@ -235,6 +240,13 @@
 ## 哨兵与自愈
 
 - **成功轮要清 `last_error`**（0.4.17）：健康文件是连续性记账的单一来源，失败时写 `last_error`、成功时必须置 `None`——否则「上一轮 timeout 3300s」会一直挂着，被后读的人（包括我）误判成当前仍在失败。`repaired_note` 属历史注记，保留不动。
+
+- **包装器「空转 return 0」与「真的跑了一轮」在 cron 里长得一模一样**：`hb-autosync.py` 命中新鲜度闸（距上次成功 <20 分钟）
+  或 `hb-sync-guard-blocked.json` 静默期时，直接 `return 0`、零输出——`cron list` 显示 `ok`，`executions.db` 显示 `completed`，
+  而 `hb-sync-runs.jsonl` 里**没有新行**、镜像 HEAD 也没有前进。实测一次：静默标记把自动轮压了 5 小时，期间 cron 每 3 分钟报 completed。
+  两条硬规则：①判「同步在跑」只认 `runs.jsonl` 新行 + 镜像 `git log -1` 前进，cron 状态只是调度层证据；
+  ②**任何一轮成功（含手动轮）都要清掉 `hb-sync-guard-blocked.json`**，否则「手动修好了」也照样被 24 小时静默期压住——
+  原来只有包装器在它自己跑成功时才清，这就是那 5 小时的成因。自检项「自动同步调度」专门掐这两个形态（任务不在册 / 哨兵 >15 分钟没执行）。
 
 - **哨兵看锁的「活性」而不是「存在」**（0.4.58，2026-10-26 审查发现）：原来只要 `SYNC_LOCK` 文件在就跳过触发——
   某一轮被杀留下锁后，哨兵就再也不会补跑（直到人工删锁）。现在读锁里的 pid，持有进程已死 ⇒ 视为没在跑，照常触发

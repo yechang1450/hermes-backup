@@ -40,8 +40,9 @@ QUIET_SECONDS = 300          # ② 静默阈值：5 分钟（按全库最后一�
 LONG_QUIET_SECONDS = 3600    # ④ 长静默阈值：1 小时
 OVERDUE_SECONDS = 150 * 60   # ⑤ 超期兜底：>2.5 小时没有成功轮 ⇒ 补一轮（周期 cron 漂移/漏跑时）
 MIN_SYNC_GAP = 20 * 60       # 距上次实际同步 ≥20 分钟才允许再触发
-SYNC_TIMEOUT = 5400    # 与 hb-autosync 一致；外层兜底（导出按进展判、硬上限 3600s + push 1500s 不能简单相加）
+SYNC_TIMEOUT = 1800    # 与 hb-autosync 一致（2026-11-01 按本机实测 88–459s 重算，留 4× 余量）
 GUARD_EXIT = 6               # sync.py 的 shrink guard：活库比备份少太多 ⇒ 拒绝同步（新机/未恢复）
+MASS_DELETE_EXIT = 7         # sync.py 的批量删除闸：按失败处理（不写 24h 静默标记）
 GUARD_MARKER = HOME / "state" / "hb-sync-guard-blocked.json"
 GUARD_QUIET_S = 24 * 3600    # 被拦下后静默一天：这是配置问题，重试无意义，但不能永远不提
 
